@@ -1,0 +1,14 @@
+# Normalise text in the repository to LF and let the checkout decide.
+* text=auto eol=lf
+
+# Batch files must keep CRLF. cmd.exe parses a script line by line as it runs,
+# and an LF only file can break multi line blocks and goto targets.
+*.bat text eol=crlf
+
+# The AmneziaWG parser accepts both, but keep the shipped example stable.
+*.conf text eol=lf
+
+# Never touch these.
+*.exe binary
+*.dll binary
+*.zip binary

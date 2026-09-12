@@ -1,0 +1,11 @@
+{
+  "config": "C:\\ProgramData\\AWGSocks\\client.conf",
+  "socks5_listen": "127.0.0.1:10808",
+  "auto_start": true,
+  "log_level": "info",
+  "max_connections": 1024,
+  "log_max_size_mb": 8,
+  "log_max_files": 5,
+  "udp_bind": "std",
+  "udp_associate": true
+}

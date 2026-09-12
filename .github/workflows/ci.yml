@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # AWGSocks is Windows only: the service, the named pipe and the network change
+  # listener have no other implementation, so there is nothing to gain from a
+  # matrix here.
+  windows:
+    name: Build and test
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: |
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/ComoEstaisAmigos/awgsocks/internal/version.Commit=${GITHUB_SHA::7}" \
+            -o awgsocks.exe ./cmd/awgsocks
+
+      - name: Version banner
+        run: ./awgsocks.exe version
+
+      - name: Test
+        run: go test ./...
