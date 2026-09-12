@@ -82,7 +82,12 @@ if ($Ref -eq 'HEAD' -and (git -C $repo status --porcelain)) {
 $work = Join-Path ([IO.Path]::GetTempPath()) ('awgpkg-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 try {
     Write-Host "Cloning $sha into a clean directory"
-    Invoke-Checked 'git clone' { git -c core.longpaths=true clone --quiet --no-local --no-checkout $repo $work }
+    # Without tags. go build stamps the main module version from them, so a
+    # clone that has v1.0.0 would embed v1.0.1-0.<date>-<commit> and one that
+    # does not, such as a shallow CI checkout, v0.0.0-<date>-<commit>: the same
+    # commit, two binaries. Which tags a packager happens to have fetched must
+    # not decide the hash.
+    Invoke-Checked 'git clone' { git -c core.longpaths=true clone --quiet --no-local --no-tags --no-checkout $repo $work }
     Invoke-Checked 'git checkout' { git -C $work -c core.longpaths=true checkout --quiet --detach $sha }
 
     $windowsDir = Join-Path $work 'windows'
@@ -127,6 +132,10 @@ try {
     $builtWith = (go version $exe) -replace '^.*:\s*', ''
     if ($builtWith -ne $goToolchain) {
         throw "the executable was built with $builtWith, expected $goToolchain"
+    }
+    $mainModule = go version -m $exe | Where-Object { $_ -match '^\s+mod\s+github\.com/ComoEstaisAmigos/awgsocks\s' } | Select-Object -First 1
+    if (-not $mainModule -or $mainModule -notmatch '\sv0\.0\.0-\d{14}-[0-9a-f]{12}(\s|$)') {
+        throw "the executable records its own module as '$mainModule'; a version derived from tags makes the hash depend on the packager's clone"
     }
 
     $files = @($exe, (Join-Path $work 'LICENSE')) + @($scripts | ForEach-Object { Join-Path $work "windows\$_" })
