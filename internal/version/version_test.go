@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -25,5 +26,66 @@ func TestBuildScriptStampsThisVersion(t *testing.T) {
 	}
 	if got := string(m[1]); got != Version {
 		t.Fatalf("scripts/build.bat stamps version %q but internal/version says %q", got, Version)
+	}
+}
+
+// TestDocsNameThePinnedUpstream keeps the documentation from quoting an
+// upstream AmneziaWG version the binary is not built against.
+//
+// The README and UPSTREAM.md each carry a version table, and sample output in
+// other documents quotes versions and short commits. None of them is generated,
+// so bumping the constants here leaves every one of them silently stale.
+func TestDocsNameThePinnedUpstream(t *testing.T) {
+	root := filepath.Join("..", "..")
+	docs, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs = append(docs, filepath.Join(root, "README.md"))
+
+	versions := map[string]bool{AmneziaWGGoVersion: true, AmneziaWGWindowsVersion: true}
+	commits := []string{AmneziaWGGoCommit, AmneziaWGWindowsCommit}
+	versionRe := regexp.MustCompile(`\bv\d+\.\d+\.\d{8}\b`)
+	fullCommitRe := regexp.MustCompile(`\b[0-9a-f]{40}\b`)
+	shortCommitRe := regexp.MustCompile(`\(commit ([0-9a-f]{7,39})\)`)
+
+	isPinnedPrefix := func(s string) bool {
+		for _, c := range commits {
+			if strings.HasPrefix(c, s) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, doc := range docs {
+		raw, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatalf("could not read %s: %v", doc, err)
+		}
+		text := string(raw)
+		name := filepath.Base(doc)
+		for _, v := range versionRe.FindAllString(text, -1) {
+			if !versions[v] {
+				t.Errorf("%s names upstream version %s, which is not pinned in internal/version", name, v)
+			}
+		}
+		for _, c := range fullCommitRe.FindAllString(text, -1) {
+			if !isPinnedPrefix(c) {
+				t.Errorf("%s names commit %s, which is not pinned in internal/version", name, c)
+			}
+		}
+		for _, m := range shortCommitRe.FindAllStringSubmatch(text, -1) {
+			if !isPinnedPrefix(m[1]) {
+				t.Errorf("%s quotes short commit %s, which is not a pinned commit", name, m[1])
+			}
+		}
+		if name == "README.md" || name == "UPSTREAM.md" {
+			for _, want := range []string{AmneziaWGGoVersion, AmneziaWGWindowsVersion, AmneziaWGGoCommit, AmneziaWGWindowsCommit} {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s has a version table but does not name %s", name, want)
+				}
+			}
+		}
 	}
 }

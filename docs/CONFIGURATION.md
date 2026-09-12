@@ -175,7 +175,8 @@ differs.
 > `internal/e2e` the RIO bind did not move throughput outside run to run
 > variance, but it did cut process CPU by roughly a tenth at the same rate. The
 > trade is CPU efficiency, not peak speed. Set `"udp_bind": "rio"` and restart
-> if you want it. See [TESTING.md](TESTING.md).
+> if you want it. The numbers are in
+> [Comparing the two UDP binds](TESTING.md#comparing-the-two-udp-binds).
 
 ## Hot reload
 

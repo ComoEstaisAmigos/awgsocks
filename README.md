@@ -40,8 +40,7 @@ Every other program -------------> default Windows connection ------------------
   timing ranges, `RandomTrailers` and `DisableCookies` when your server uses them.
 - Derive a safe MTU from the AmneziaWG per-packet overhead, which plain
   WireGuard defaults get wrong. See
-  [UDP behaviour](docs/NETWORKING.md#udp-behaviour) and
-  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+  [MTU and the AmneziaWG per-packet prefix](docs/NETWORKING.md#mtu-and-the-amneziawg-per-packet-prefix).
 - Support IPv4 and IPv6 destinations.
 - Serve SOCKS5 `CONNECT` and `UDP ASSOCIATE` on `127.0.0.1:10808` with no
   authentication.
@@ -114,7 +113,7 @@ with `0x03 network unreachable`, because there is nowhere else for it to go.
 | Operating system | Windows 10 or Windows 11, x64 |
 | Extra software | None |
 | Drivers | None |
-| Privileges | Administrator to install the service. The tunnel itself needs none. |
+| Privileges | Administrator to install and control the service. The tunnel itself needs none. |
 
 `awgsocks.exe` is a single file. It needs no DLLs and no runtime libraries
 beside it.
@@ -174,10 +173,10 @@ scripts\build.bat
 
 or by hand:
 
-```bat
-set GOOS=windows
-set GOARCH=amd64
-set CGO_ENABLED=0
+```powershell
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+$env:CGO_ENABLED = "0"
 go build -trimpath -ldflags="-s -w" -o awgsocks.exe .\cmd\awgsocks
 ```
 
@@ -210,8 +209,7 @@ proxy with no authentication, and turn on whatever its setting is called for
 resolving hostnames through the proxy. Without that the program resolves names
 itself and leaks them outside the tunnel.
 
-To confirm it works, fetch `https://api.ipify.org` through the proxy. It should
-report the VPN server address, not your own.
+To confirm it works, run the [quick leak check](#testing).
 
 > [!NOTE]
 > `service-uninstall.bat` deletes the copy of your configuration that the
@@ -271,7 +269,6 @@ This must fail. If it prints your ISP address, there is a leak.
 | I1-I5 validation | The syntax of these can only be checked by the upstream device, which the `awgsocks check` dry run does. |
 | `range<uint16>` parameters | The official documentation types `ContentPaddingAddition` and the timing parameters as `range<uint16>` while the pinned upstream accepts `range<uint32>`. AWGSocks follows upstream and warns above 65535. |
 | Default UDP bind | The official AmneziaWG Windows client uses the Registered I/O bind; AWGSocks defaults to standard UDP sockets. See [Choosing udp_bind](docs/CONFIGURATION.md#choosing-udp_bind). |
-| Race detector | On Windows `go test -race` needs cgo, that is, a C compiler. It is **not** needed to build AWGSocks. |
 
 ## Documentation
 

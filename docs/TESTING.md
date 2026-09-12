@@ -24,16 +24,16 @@ go build ./...
 | `internal/dns` | Cache hits, coalescing of concurrent lookups, negative caching, the concurrency limit |
 | `internal/socks5` | The SOCKS5 protocol, IPv4, IPv6 and hostname destinations, UDP ASSOCIATE, reply code mapping, refusal to bind outside loopback, and **that the source contains no `net.Dial`** |
 | `internal/awg` | The upstream dry run, fail-closed behaviour, UAPI status parsing, dropping of secret fields, and **that the package contains no `net.Dial`** |
-| `internal/service` | Service lifecycle, port release on stop, and that a broken configuration never replaces a healthy tunnel |
+| `internal/service` | Service lifecycle, port release on stop, that a broken configuration never replaces a healthy tunnel, what each reload applies, non-delayed start and the retry of a tunnel that cannot come up yet, and which ACL `repair` gives each file |
 | `internal/e2e` | **The end to end data path over real AmneziaWG**, with both UDP bind implementations |
 | `internal/winsys` | That the data directory ACL names SYSTEM and Administrators and nobody else, and that `config.json` is readable but not writable by a standard user |
-| `internal/version` | That `scripts/build.bat` stamps the same release version the code declares |
+| `internal/version` | That `scripts/build.bat` stamps the same release version the code declares, and that no document quotes an upstream version or commit other than the pinned one |
 | `cmd/awgsocks` | That the double click message names only the helper scripts that are really present, and offers a command that runs in any shell |
 
 ### Race detector
 
-```bat
-set CGO_ENABLED=1
+```powershell
+$env:CGO_ENABLED = "1"
 go test -race ./...
 ```
 
@@ -78,6 +78,7 @@ Sample output:
 --- PASS: TestUDPThroughTunnel (1.01s)
 --- PASS: TestUDPFailsClosedWhenTunnelStops (1.01s)
 --- PASS: TestInTunnelDNSSurvivesALostResponse (3.01s)
+--- PASS: TestRequestBeforeTheNetworkArrivesIsHeldNotRefused (6.01s)
 ```
 
 > [!NOTE]
@@ -125,25 +126,33 @@ curl.exe https://api.ipify.org
 
 The two must differ.
 
-### TEST B: a SOCKS request must fail when the service is stopped
+### TEST B: a SOCKS request must fail when the tunnel cannot carry it
 
 ```bat
 .\awgsocks.exe stop
-curl.exe -v --proxy socks5h://127.0.0.1:10808 https://api.ipify.org
+curl.exe --proxy socks5h://127.0.0.1:10808 https://api.ipify.org
 ```
 
-Expected: an error such as `cannot complete SOCKS5 connection ... (3)`.
+Expected: curl cannot reach the proxy at all, because stopping the service
+closes the port.
+
+```
+curl: (7) Failed to connect to api.ipify.org:443 over proxy 127.0.0.1 after 2024 ms: Could not connect to server
+```
 
 > [!WARNING]
 > This must never return your ISP address. If it does, there is a leak.
 
-The same behaviour is observable without any server: with an unreachable
-endpoint the result is identical.
+The other way to fail is with the service running and no handshake, which is
+what an unreachable or wrongly configured server gives you. The proxy accepts
+the request, waits for the tunnel, and then refuses it with SOCKS5 reply `0x03`:
 
 ```
-* cannot complete SOCKS5 connection to api.ipify.org. (3)
-curl exit: 97, after 15.0 s
+curl: (97) cannot complete SOCKS5 connection to api.ipify.org. (3)
 ```
+
+That answer takes 20 seconds for a hostname, because the wait counts against
+in-tunnel name resolution, and 15 for an IP address.
 
 ### TEST C: the default Internet connection must work while the service is stopped
 
@@ -251,6 +260,9 @@ Test-NetConnection -ComputerName <LAN-IP> -Port 10808
 
 ## Verifying that no key material is logged
 
+The log directory is closed to standard users, so run this from an
+Administrator prompt:
+
 ```powershell
 Select-String -Path "$env:ProgramData\AWGSocks\logs\*.log" `
   -Pattern '\b[0-9a-fA-F]{64}\b'
@@ -321,9 +333,9 @@ has to aim.
 
 ### Comparing the two UDP binds
 
-`internal/awg/bind.go` explains why `std` is the default rather than the
-Registered I/O bind the official Windows client uses. This is what the choice
-actually costs:
+[Choosing udp_bind](CONFIGURATION.md#choosing-udp_bind) explains why `std` is
+the default rather than the Registered I/O bind the official Windows client
+uses. This is what the choice actually costs:
 
 ```bat
 go test ./internal/e2e -run "^$" -bench BenchmarkBindModeUpload -benchtime=3s -count=2
@@ -331,15 +343,13 @@ go test ./internal/e2e -run "^$" -bench BenchmarkBindModeUpload -benchtime=3s -c
 
 | bind | one stream | four streams | process CPU, one stream |
 | ---- | ---------- | ------------ | ----------------------- |
-| `std` | 14.85 MB/s | 57.1 MB/s | ~457% |
-| `rio` | 14.99 MB/s | 58.7 MB/s | ~409% |
+| `std` | ~119 Mbit/s | ~457 Mbit/s | ~4.6 cores |
+| `rio` | ~120 Mbit/s | ~470 Mbit/s | ~4.1 cores |
 
 The throughput difference sits inside run to run variance. The CPU difference
 does not: RIO does the same work for roughly a tenth less processor time, which
 follows from the profile above, since it is the socket layer that dominates.
-
-So the trade is CPU efficiency, not peak speed. Choosing `rio` to go faster
-would be choosing it for the wrong reason.
+Choosing `rio` to go faster would be choosing it for the wrong reason.
 
 ### The network stack handoff experiment
 

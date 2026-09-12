@@ -7,7 +7,8 @@ want in a script of your own or when something needs diagnosing.
 ## Installing
 
 > [!IMPORTANT]
-> The install commands must be run from an elevated command prompt.
+> Installing must be run from an elevated command prompt. Validating the
+> configuration first does not need one.
 
 ### 1. Validate the configuration
 
@@ -63,7 +64,8 @@ usable. When the tunnel cannot come up yet, for example because `Endpoint` is a
 hostname that cannot be resolved so early, the service keeps its port open,
 refuses requests explicitly, and retries the tunnel: first after a second, then
 backing off to once a minute, and at once whenever a network address appears.
-`status` shows it as not yet connected in the meantime.
+In the meantime `status` shows the tunnel `State` as `failed` with the reason
+under `Last error`, or as `connecting` while an attempt is under way.
 
 > [!WARNING]
 > Step three is a security measure, not a convenience. The service runs as
@@ -74,7 +76,7 @@ backing off to once a minute, and at once whenever a network address appears.
 >
 > The consequence: after updating `awgsocks.exe` you must run
 > `awgsocks uninstall` and then `awgsocks install` for the service to pick up
-> the new version.
+> the new version. `service-install.bat` does both.
 
 > [!NOTE]
 > Without `--start` the service is installed but **not running**, and nothing
@@ -115,16 +117,13 @@ backing off to once a minute, and at once whenever a network address appears.
 Re-applies the permissions an install sets, and changes nothing else: not
 the service registration, not the configuration, not the running tunnel.
 
-It is there for one situation. Explorer cannot open
-`C:\ProgramData\AWGSocks` and offers to grant permanent access; accepting
-adds the interactive user to that directory with Full control, which carries
-`FILE_DELETE_CHILD`. The service binary lives there and runs as LocalSystem,
-so from then on it can be replaced by anyone logged in as that user. `repair`
+It is there for one situation: someone accepted Explorer's offer to grant
+permanent access to `C:\ProgramData\AWGSocks`, which lets the service binary be
+replaced. Why that is dangerous, and why `config.json` is the one file a
+standard user may read anyway, is in
+[Reading and editing it](CONFIGURATION.md#reading-and-editing-it). `repair`
 closes the directory again, re-locks `client.conf`, the logs and
 `awgsocks.exe`, and leaves `config.json` readable.
-
-See [Reading and editing it](CONFIGURATION.md#reading-and-editing-it) for why
-`config.json` is the one file a standard user may read.
 
 ### status output
 

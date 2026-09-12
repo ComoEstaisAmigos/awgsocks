@@ -113,14 +113,10 @@ unmodified:
 
 ## One upstream race worth knowing about
 
-Upstream starts its TUN reader inside `NewDevice`, before `IpcSet` has run, and
-that loop captures the transport padding before blocking in `tun.Read`. The
-first packet out of a freshly created device is therefore framed without the
-`S4` prefix and the peer discards it.
-
-TCP hides it, because the lost packet is a SYN. UDP does not. AWGSocks works
-around it by sending one throwaway datagram to a discard address right after the
-device comes up; see `primeTransportPadding` in `internal/awg/tunnel.go`.
+The first packet out of a freshly created upstream device goes out without its
+`S4` prefix, and AWGSocks works around it without patching upstream. The cause
+and the workaround are in
+[The transport padding priming packet](ARCHITECTURE.md#4-the-transport-padding-priming-packet).
 
 ## No local modifications
 
@@ -139,7 +135,9 @@ go list -m all
 
 1. Determine the new upstream version and commit SHA.
 2. Run `go get github.com/amnezia-vpn/amneziawg-go/v3@<version>`.
-3. Update the constants in `internal/version/version.go`.
+3. Update the constants in `internal/version/version.go`, and the version
+   tables in this document and the README. A test fails while any document
+   names a different version or commit.
 4. Add any new UAPI keys to the accept list in `internal/config/params.go`.
 5. Update `upstreamVersionNote` in `internal/config/tunnel.go`.
 6. Run `go test ./...`. The `internal/e2e` test moves real data between two

@@ -422,7 +422,8 @@ func RestartService() error {
 	return StartService()
 }
 
-// QueryState returns the SCM state of the service in Turkish.
+// QueryState returns the SCM state of the service as a word for CLI output,
+// such as "running", "stopped" or "not installed".
 //
 // It opens the service control manager with connect-only rights and the
 // service with query-status rights, so that reading the state does not require

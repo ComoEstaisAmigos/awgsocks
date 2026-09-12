@@ -26,7 +26,7 @@ The symptom is a browser stuck on "performing a TLS handshake" forever while the
 same site loads fine with `curl`. Downloads work, uploads do not.
 
 This is the MTU problem described under
-[UDP behaviour](NETWORKING.md#mtu-and-the-amneziawg-per-packet-prefix). Check that `check`
+[MTU and the AmneziaWG per-packet prefix](NETWORKING.md#mtu-and-the-amneziawg-per-packet-prefix). Check that `check`
 reports a derived MTU rather than 1420:
 
 ```bat
@@ -72,12 +72,19 @@ The other possibility is that the in-tunnel DNS server is not covered by
 
 ## The service will not start
 
+From an Administrator prompt, since the log directory is closed to standard
+users:
+
 ```bat
 .\awgsocks.exe check --config C:\ProgramData\AWGSocks\client.conf
 type C:\ProgramData\AWGSocks\logs\awgsocks.log
 ```
 
 An invalid configuration is the usual cause, and `check` names the line.
+
+A tunnel that cannot come up is a different case: the service still starts,
+keeps retrying, and `status` shows `State : failed` with the reason under
+`Last error`, typically an `Endpoint` hostname that cannot be resolved yet.
 
 ## No handshake
 

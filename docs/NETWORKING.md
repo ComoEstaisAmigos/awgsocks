@@ -111,19 +111,8 @@ AWGSocks writes **nothing** to the Windows routing table.
 peer may carry any destination". It goes only into the AmneziaWG device's
 internal `allowedips` trie and has nothing to do with Windows routing.
 
-Verify:
-
-```powershell
-route print -4 > before.txt
-.\awgsocks.exe start
-route print -4 > after.txt
-Compare-Object (Get-Content before.txt) (Get-Content after.txt)
-```
-
-The output should be empty.
-
-### Why there is no routing loop
-
-Because no system wide `0.0.0.0/0` route is installed, the encrypted UDP cannot
-be routed back into the tunnel. The endpoint socket uses the default physical
-connection.
+Because no system wide route is installed, the encrypted UDP cannot be routed
+back into the tunnel either: the endpoint socket uses the default physical
+connection. To see for yourself that the routing table is untouched, compare it
+before and after starting the service, as in
+[Verifying routing and adapters](TESTING.md#verifying-routing-and-adapters).

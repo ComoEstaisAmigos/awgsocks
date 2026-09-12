@@ -53,15 +53,12 @@ a SOCKS5 request fails, because there is no other path it could take.
 
 ### 3.1 Which upstream AmneziaWG implementation is embedded
 
-`github.com/amnezia-vpn/amneziawg-go/v3` version `v3.1.20260828`, commit
-`b5928efb6ca19f0153958460c3d141f04abc5c2e`.
+`github.com/amnezia-vpn/amneziawg-go/v3`. Configuration parsing and UAPI
+generation come from `github.com/amnezia-vpn/amneziawg-windows/v3`, which is the
+`conf` package of the official AmneziaWG Windows client.
 
-Configuration parsing and UAPI generation come from
-`github.com/amnezia-vpn/amneziawg-windows/v3` version `v3.1.20260814`, commit
-`e90531d15802cb976773f3b63443bc281f738ca3`, which is the `conf` package of the
-official AmneziaWG Windows client.
-
-The reasoning is in [UPSTREAM.md](UPSTREAM.md).
+The pinned versions and commits, and the reasoning behind them, are in
+[UPSTREAM.md](UPSTREAM.md).
 
 ### 3.2 Why this is real AmneziaWG and not standard WireGuard
 
@@ -197,7 +194,9 @@ nothing to do with operating system routing.
 
 The only things that enter the gVisor stack are packets written to it, and the
 only code that writes to it is `awg.Tunnel.DialTCP`, `awg.Tunnel.ListenUDP` and
-`awg.Tunnel.LookupHost`, all of which are called only by the SOCKS5 server. A
+`awg.Tunnel.LookupHost`, all of which are called only by the SOCKS5 server, plus
+the single throwaway datagram described in
+[section 4](#4-the-transport-padding-priming-packet). A
 program that does not use the proxy never touches AWGSocks at all.
 
 ### 3.13 What happens to SOCKS traffic if AmneziaWG drops
@@ -209,13 +208,11 @@ has been observed and reopened when the handshake goes stale. `DialTCP` calls
 | Tunnel state | Result | SOCKS5 reply |
 | --- | --- | --- |
 | Not running | `ErrTunnelDown`, immediately | `0x03` network unreachable |
-| Running, no handshake | `ErrNotReady` after 15 seconds | `0x03` network unreachable |
+| Running, no handshake | `ErrNotReady` after 15 seconds, or 20 for a hostname, whose wait counts against in-tunnel resolution | `0x03` network unreachable |
 | Running, live handshake | The connection is made | `0x00` |
 
-No alternative egress is ever attempted. UDP ASSOCIATE behaves the same way: the
-in-tunnel socket is opened before the client is told the association exists, so
-a tunnel that cannot carry UDP produces a refused association rather than
-datagrams that silently disappear.
+No alternative egress is ever attempted, and UDP ASSOCIATE fails closed the same
+way; see [UDP behaviour](NETWORKING.md#udp-behaviour).
 
 ### 3.14 Where DNS is resolved for SOCKS hostname requests
 
@@ -251,16 +248,9 @@ requirement.
 
 The `golang.zx2c4.com/wintun` binding is linked into the binary because
 `tun/netstack` imports the `tun` package and `tun_windows.go` lives in that same
-package. No Wintun function is ever called and `wintun.dll` is never loaded,
-which is verifiable:
-
-```powershell
-(Get-Process awgsocks).Modules | Where-Object { $_.ModuleName -like "*wintun*" }
-```
-
-That returns nothing for a running AWGSocks process, and `Get-NetAdapter` shows
-no new adapter. Both checks are part of the leak verification in
-[TESTING.md](TESTING.md).
+package. No Wintun function is ever called, `wintun.dll` is never loaded, and no
+adapter appears; how to check both on a running process is in
+[Verifying routing and adapters](TESTING.md#verifying-routing-and-adapters).
 
 What the choice costs, in one view:
 
@@ -271,7 +261,7 @@ What the choice costs, in one view:
 | Windows route added | None |
 | System DNS setting changed | None |
 | Adapter to clean up on uninstall | None |
-| Privilege required to run the tunnel | None, only service registration needs Administrator |
+| Privilege required to run the tunnel | None; installing and controlling the service needs Administrator |
 
 ### 3.17 Which Windows privileges are required
 
@@ -279,15 +269,15 @@ What the choice costs, in one view:
 | --- | --- |
 | `awgsocks version`, `check` | None |
 | `awgsocks run` (foreground) | None, but it needs a writable data directory |
-| `awgsocks install`, `uninstall` | Administrator |
+| `awgsocks install`, `uninstall`, `repair` | Administrator |
 | `awgsocks start`, `stop`, `restart` | Administrator |
 | `awgsocks status`, `reload`, `reconnect` | Access to the management pipe (Administrator or the service account) |
 | The service itself | LocalSystem |
 | Running the tunnel | No extra privilege, no raw socket and no driver |
 
 Unlike solutions built on Wintun, the tunnel itself needs no administrative
-rights. Elevation is only for service registration and for the file permissions
-under ProgramData.
+rights. Elevation is for managing the service and the files it runs from, never
+for carrying traffic.
 
 ## 4. The transport padding priming packet
 
@@ -339,3 +329,5 @@ What it verifies:
 - The same data path over the Windows Registered I/O bind
 - A hostname still resolves when one of the two DNS replies is lost, so a
   single dropped datagram cannot make a name look as though it does not exist
+- A request sent before the server can be reached is held and then served once
+  the handshake completes, rather than refused
