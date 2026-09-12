@@ -15,7 +15,9 @@ all obfuscation run in the official upstream code pinned below.
 | Go toolchain | - | 1.25.0 or newer to build; releases are packaged with go1.27.1 | - |
 
 These must stay identical to the requirements in `go.mod` and the constants in
-`internal/version/version.go`. `awgsocks version` prints them at runtime.
+`internal/version/version.go`. `awgsocks version` prints the two AmneziaWG
+modules with their commits at runtime; the rest are visible with
+`go version -m awgsocks.exe`.
 
 ## Why this AmneziaWG version
 
@@ -29,8 +31,8 @@ S1, S2, S3, S4
 H1, H2, H3, H4   (range<uint32>)
 ```
 
-`S3` and `S4` were added upstream by the merge labelled "AmneziaWG v1.5"
-(`amneziawg-go` commit `c207898`, 2025-07-07). That makes this an AmneziaWG 1.5
+`S3` and `S4` were added upstream by the pull request "AmneziaWG v1.5"
+(`amneziawg-go` #84, squashed into commit `c207898`, 2025-07-07). That makes this an AmneziaWG 1.5
 class configuration: an upstream older than 1.5 would not recognise `S3` and
 `S4` at all.
 

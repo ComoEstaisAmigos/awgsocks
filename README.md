@@ -123,7 +123,7 @@ beside it.
 | Item | Requirement |
 | --- | --- |
 | Go | 1.25.0 or newer |
-| Git | Optional, only to stamp the commit into the binary |
+| Git | Optional for `scripts\build.bat`, which uses it to stamp the commit and its date into the binary. Required by `scripts\package.bat` |
 | MinGW-w64 | Only to run `go test -race`, see [docs/TESTING.md](docs/TESTING.md) |
 
 It builds with `CGO_ENABLED=0`. Every Windows specific call goes through
