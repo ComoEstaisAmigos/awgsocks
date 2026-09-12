@@ -29,6 +29,28 @@ func TestBuildScriptStampsThisVersion(t *testing.T) {
 	}
 }
 
+// TestReleaseToolchainIsDocumented keeps the Go version releases are packaged
+// with, pinned in scripts/package.ps1 so the zip is reproducible, equal to the
+// one UPSTREAM.md tells people to use when they check a release.
+func TestReleaseToolchainIsDocumented(t *testing.T) {
+	root := filepath.Join("..", "..")
+	raw, err := os.ReadFile(filepath.Join(root, "scripts", "package.ps1"))
+	if err != nil {
+		t.Fatalf("could not read scripts/package.ps1: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^\$goToolchain = '(go\d+\.\d+(?:\.\d+)?)'`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("scripts/package.ps1 no longer pins $goToolchain, so releases are not reproducible")
+	}
+	doc, err := os.ReadFile(filepath.Join(root, "docs", "UPSTREAM.md"))
+	if err != nil {
+		t.Fatalf("could not read docs/UPSTREAM.md: %v", err)
+	}
+	if want := "releases are packaged with " + string(m[1]); !strings.Contains(string(doc), want) {
+		t.Errorf("scripts/package.ps1 pins %s but docs/UPSTREAM.md does not say %q", m[1], want)
+	}
+}
+
 // TestDocsNameThePinnedUpstream keeps the documentation from quoting an
 // upstream AmneziaWG version the binary is not built against.
 //

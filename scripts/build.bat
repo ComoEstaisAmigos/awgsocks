@@ -3,7 +3,8 @@ setlocal enabledelayedexpansion
 
 rem AWGSocks build script. Produces awgsocks.exe for Windows x64.
 rem Build-time requirements: Go 1.25 or newer, and Git only if you want the
-rem commit hash stamped into the binary. No C compiler and no CGO are needed.
+rem commit hash and date stamped into the binary. No C compiler and no CGO are
+rem needed.
 
 cd /d "%~dp0\.."
 
@@ -15,9 +16,19 @@ set VERSION=1.0.0
 set PKG=github.com/ComoEstaisAmigos/awgsocks/internal/version
 
 set COMMIT=unknown
-for /f "delims=" %%i in ('git rev-parse --short HEAD 2^>nul') do set COMMIT=%%i
+for /f "delims=" %%i in ('git rev-parse --short^=7 HEAD 2^>nul') do set COMMIT=%%i
 
-for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')"') do set BUILDDATE=%%i
+rem The stamped date is the commit date, not the moment of the build, so the
+rem same commit always builds into the same binary. SOURCE_DATE_EPOCH, the
+rem reproducible-builds.org convention, takes precedence when it is set.
+set BUILDDATE=unknown
+set EPOCH=%SOURCE_DATE_EPOCH%
+if not defined EPOCH (
+  for /f "delims=" %%i in ('git log -1 --format^=%%ct 2^>nul') do set EPOCH=%%i
+)
+if defined EPOCH (
+  for /f "delims=" %%i in ('powershell -NoProfile -Command "[DateTimeOffset]::FromUnixTimeSeconds(%EPOCH%).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')"') do set BUILDDATE=%%i
+)
 
 echo Building AWGSocks %VERSION% (commit %COMMIT%) for %GOOS%/%GOARCH%
 

@@ -10,7 +10,9 @@ var Version = "1.0.0"
 // Commit is the AWGSocks source revision, injected at build time when available.
 var Commit = "unknown"
 
-// BuildDate is the build timestamp, injected at build time when available.
+// BuildDate is injected at build time when available. scripts\build.bat stamps
+// the commit date rather than the time of the build, so rebuilding a commit
+// reproduces the binary.
 var BuildDate = "unknown"
 
 // Pinned upstream identities. These are the exact upstream artifacts AWGSocks

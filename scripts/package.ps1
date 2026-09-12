@@ -12,6 +12,11 @@ Building from a fresh clone rather than the working tree is the point: nothing
 uncommitted, untracked or ignored can end up in a release, so the zip matches
 what the commit says it is.
 
+The zip is reproducible. Every input is a function of the commit, including the
+build date and the entry timestamps, which are the commit date, and the Go
+toolchain, which is pinned below. Packaging the same commit again, anywhere,
+gives the same SHA256.
+
 Run it through scripts\package.bat, which gets past the default execution
 policy.
 
@@ -43,6 +48,12 @@ $scripts = @(
     'service-config.bat',
     'service-uninstall.bat'
 )
+
+# Releases are built with exactly this Go toolchain. The same source built by
+# another Go version is a different binary, so without the pin two people
+# packaging the same commit would publish two hashes. The go command downloads
+# this version by itself when a different one is installed.
+$goToolchain = 'go1.27.1'
 
 function Invoke-Checked {
     param([string]$What, [scriptblock]$Command)
@@ -85,6 +96,18 @@ try {
         throw "windows\ holds [$($present -join ', ')] but this script ships [$($listed -join ', ')]. Update the list."
     }
 
+    # Everything that goes into the zip is a function of the commit. Its date
+    # stands in for the build time, both inside the executable and on every zip
+    # entry, and the Go settings a user environment could change are reset so
+    # that nobody's shell configuration leaks into a release.
+    $epoch = [long](git -C $work log -1 --format=%ct)
+    $stamp = [DateTimeOffset]::FromUnixTimeSeconds($epoch)
+    $env:SOURCE_DATE_EPOCH = "$epoch"
+    $env:GOTOOLCHAIN = $goToolchain
+    $env:GOAMD64 = 'v1'
+    $env:GOFLAGS = ''
+    $env:GOEXPERIMENT = ''
+
     Invoke-Checked 'scripts\build.bat' { cmd.exe /d /c "`"$work\scripts\build.bat`"" }
 
     $buildScript = Get-Content -LiteralPath (Join-Path $work 'scripts\build.bat')
@@ -93,13 +116,17 @@ try {
         throw 'scripts\build.bat no longer sets VERSION'
     }
     $version = ($versionLine -replace '^set VERSION=', '').Trim()
-    $short = git -C $work rev-parse --short HEAD
+    $short = git -C $work rev-parse --short=7 HEAD
 
     $exe = Join-Path $work 'awgsocks.exe'
     $banner = & $exe version | Select-Object -First 1
-    $expected = "AWGSocks $version (commit $short,"
-    if (-not $banner.StartsWith($expected)) {
-        throw "the built executable says '$banner', expected it to start with '$expected'"
+    $expected = "AWGSocks $version (commit $short, built $($stamp.UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')))"
+    if ($banner -ne $expected) {
+        throw "the built executable says '$banner', expected '$expected'"
+    }
+    $builtWith = (go version $exe) -replace '^.*:\s*', ''
+    if ($builtWith -ne $goToolchain) {
+        throw "the executable was built with $builtWith, expected $goToolchain"
     }
 
     $files = @($exe, (Join-Path $work 'LICENSE')) + @($scripts | ForEach-Object { Join-Path $work "windows\$_" })
@@ -114,9 +141,35 @@ try {
         }
     }
 
-    Compress-Archive -LiteralPath $files -DestinationPath $zip -CompressionLevel Optimal
+    # Written entry by entry rather than with Compress-Archive, which stamps each
+    # entry with the file's modification time: in a fresh clone that is the
+    # moment of the checkout, so every run would produce a different zip. The
+    # timestamp has to be set before an entry is opened, because a ZipArchive in
+    # Create mode refuses to change an entry once its data has been written.
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $stream = [IO.File]::Open($zip, [IO.FileMode]::CreateNew)
+    try {
+        $writer = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($file in $files) {
+                $entry = $writer.CreateEntry((Split-Path -Leaf $file), [IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $stamp
+                $out = $entry.Open()
+                $in = [IO.File]::OpenRead($file)
+                try {
+                    $in.CopyTo($out)
+                } finally {
+                    $in.Dispose()
+                    $out.Dispose()
+                }
+            }
+        } finally {
+            $writer.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($zip)
     try {
         $entries = @($archive.Entries | ForEach-Object { $_.FullName })
@@ -140,6 +193,7 @@ try {
     Write-Host "SHA256  : $hash"
     Write-Host "Commit  : $sha ($tagNote)"
     Write-Host "Banner  : $banner"
+    Write-Host "Go      : $builtWith"
     Write-Host "Entries : $($entries -join ', ')"
 } finally {
     if (Test-Path -LiteralPath $work) {

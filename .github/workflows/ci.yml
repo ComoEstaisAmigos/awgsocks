@@ -51,8 +51,15 @@ jobs:
       - name: Test
         run: go test ./...
 
-      # Runs the release packaging end to end, so a change that breaks it is
-      # found on the commit that made it rather than on release day.
+      # Runs the release packaging end to end, twice, so a change that breaks it
+      # or makes the zip depend on when it was built is found on the commit that
+      # made it rather than on release day. The printed SHA256 can be compared
+      # with a local run of the same commit.
       - name: Package
         shell: cmd
-        run: scripts\package.bat -OutDir "%RUNNER_TEMP%\package"
+        run: |
+          call scripts\package.bat -OutDir "%RUNNER_TEMP%\package-1"
+          if errorlevel 1 exit /b 1
+          call scripts\package.bat -OutDir "%RUNNER_TEMP%\package-2"
+          if errorlevel 1 exit /b 1
+          fc /b "%RUNNER_TEMP%\package-1\SHA256SUMS.txt" "%RUNNER_TEMP%\package-2\SHA256SUMS.txt"

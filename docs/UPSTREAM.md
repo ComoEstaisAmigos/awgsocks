@@ -12,7 +12,7 @@ all obfuscation run in the official upstream code pinned below.
 | Wintun Go binding | `golang.zx2c4.com/wintun` | `v0.0.0-20230126152724-0fa3db229ce2` | indirect, never called |
 | gVisor netstack | `gvisor.dev/gvisor` | `v0.0.0-20231202080848-1f7806d17489` | pinned by amneziawg-go |
 | Windows named pipes | `github.com/Microsoft/go-winio` | `v0.6.2` | - |
-| Go toolchain | - | 1.25.0 or newer (developed on 1.27.1) | - |
+| Go toolchain | - | 1.25.0 or newer to build; releases are packaged with go1.27.1 | - |
 
 These must stay identical to the requirements in `go.mod` and the constants in
 `internal/version/version.go`. `awgsocks version` prints them at runtime.

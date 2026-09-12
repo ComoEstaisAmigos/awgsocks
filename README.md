@@ -197,6 +197,12 @@ It clones the repository into a temporary directory, builds the committed
 `SHA256SUMS.txt` to `release\`. Working in a fresh clone means nothing
 uncommitted can end up in the zip. `-Ref <tag>` packages a tag instead.
 
+The zip is reproducible: packaging the same commit again gives the same
+SHA256, so anyone can check that a release was built from its tag. The build
+date inside the executable and the timestamps inside the zip are the commit
+date, and the Go toolchain is pinned in `scripts\package.ps1`, which downloads
+it when a different version is installed.
+
 The service scripts live in `windows\` in the source tree. They expect
 `awgsocks.exe` beside them, which is how the zip lays them out.
 
