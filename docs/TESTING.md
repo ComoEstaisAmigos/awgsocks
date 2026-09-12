@@ -28,7 +28,7 @@ go build ./...
 | `internal/e2e` | **The end to end data path over real AmneziaWG**, with both UDP bind implementations |
 | `internal/winsys` | That the data directory ACL names SYSTEM and Administrators and nobody else, and that `config.json` is readable but not writable by a standard user |
 | `internal/version` | That `scripts/build.bat` stamps the same release version the code declares, and that no document quotes an upstream version or commit other than the pinned one |
-| `cmd/awgsocks` | That the double click message names only the helper scripts that are really present, and offers a command that runs in any shell |
+| `cmd/awgsocks` | That the double click message names only the helper scripts that are really present, offers a command that runs in any shell, and that `scripts\package.ps1` ships exactly the scripts in `windows\` |
 
 ### Race detector
 

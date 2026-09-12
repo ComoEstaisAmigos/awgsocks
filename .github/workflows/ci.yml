@@ -50,3 +50,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      # Runs the release packaging end to end, so a change that breaks it is
+      # found on the commit that made it rather than on release day.
+      - name: Package
+        shell: cmd
+        run: scripts\package.bat -OutDir "%RUNNER_TEMP%\package"

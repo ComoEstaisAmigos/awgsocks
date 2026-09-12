@@ -186,6 +186,20 @@ Checks:
 scripts\test.bat
 ```
 
+The same zip a release carries:
+
+```bat
+scripts\package.bat
+```
+
+It clones the repository into a temporary directory, builds the committed
+`HEAD` there, and writes `awgsocks-<version>-windows-amd64.zip` and
+`SHA256SUMS.txt` to `release\`. Working in a fresh clone means nothing
+uncommitted can end up in the zip. `-Ref <tag>` packages a tag instead.
+
+The service scripts live in `windows\` in the source tree. They expect
+`awgsocks.exe` beside them, which is how the zip lays them out.
+
 ## Quick start
 
 Six scripts sit next to `awgsocks.exe`. Each one asks for Administrator rights

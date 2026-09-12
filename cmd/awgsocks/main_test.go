@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -92,6 +94,55 @@ func TestHelperScriptsInHandlesMissingDirectory(t *testing.T) {
 	}
 	if got := helperScriptsIn(filepath.Join(t.TempDir(), "nope")); len(got) != 0 {
 		t.Errorf("a missing directory should list nothing, got %v", got)
+	}
+}
+
+// TestReleasePackageShipsEveryHelperScript keeps three lists of the same six
+// files from drifting apart: the scripts the double click message can name,
+// the scripts in windows\, and the scripts scripts\package.ps1 puts in the zip.
+//
+// Each way they can disagree ships something broken. A script added to
+// windows\ but not to the package never reaches anyone; one the package lists
+// but the message does not is never mentioned to the person who needs it; and
+// one the message names but the zip lacks sends them looking for a file that is
+// not there.
+func TestReleasePackageShipsEveryHelperScript(t *testing.T) {
+	root := filepath.Join("..", "..")
+
+	var named []string
+	for _, s := range helperScripts {
+		named = append(named, s.name)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "scripts", "package.ps1"))
+	if err != nil {
+		t.Fatalf("could not read scripts/package.ps1: %v", err)
+	}
+	block := regexp.MustCompile(`(?s)\$scripts = @\((.*?)\)`).FindSubmatch(raw)
+	if block == nil {
+		t.Fatal("scripts/package.ps1 no longer declares $scripts = @(...), so this check cannot see what it ships")
+	}
+	var packaged []string
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllSubmatch(block[1], -1) {
+		packaged = append(packaged, string(m[1]))
+	}
+	if strings.Join(packaged, ",") != strings.Join(named, ",") {
+		t.Errorf("scripts/package.ps1 ships %v but the executable names %v, in that order", packaged, named)
+	}
+
+	found, err := filepath.Glob(filepath.Join(root, "windows", "*.bat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inTree []string
+	for _, f := range found {
+		inTree = append(inTree, filepath.Base(f))
+	}
+	want := append([]string(nil), named...)
+	sort.Strings(inTree)
+	sort.Strings(want)
+	if strings.Join(inTree, ",") != strings.Join(want, ",") {
+		t.Errorf("windows\\ holds %v but the executable names %v", inTree, want)
 	}
 }
 
