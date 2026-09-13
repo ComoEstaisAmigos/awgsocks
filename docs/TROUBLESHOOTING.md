@@ -86,6 +86,42 @@ A tunnel that cannot come up is a different case: the service still starts,
 keeps retrying, and `status` shows `State : failed` with the reason under
 `Last error`, typically an `Endpoint` hostname that cannot be resolved yet.
 
+## Everything loses its connection while another VPN app is connected
+
+Seen with the AmneziaVPN app connected on the same `.conf` the service was
+installed from: connections fail or keep dropping, pages stall, and programs
+that never use the proxy suffer too.
+
+The cause is one client key used by two clients at once. A WireGuard server
+keeps a single session for each key, so every handshake from one client takes
+that session from the other, the other handshakes to take it back, and the two
+keep trading it. When the other client is a system wide VPN, the whole machine's
+traffic is caught in that.
+
+AWGSocks watches for it. A system wide client assigns the tunnel address from
+the `Address` line to the adapter it creates, and AWGSocks never creates one,
+so a Windows adapter holding that address means the same configuration is
+connected elsewhere. The tunnel then pauses without sending another packet, the
+proxy refuses requests with `0x03` instead of sending them anywhere else, and
+`service-install.bat` and `service-start.bat` say so instead of reporting the
+proxy ready. `status` says why:
+
+```
+State             : stopped
+Paused            : this configuration is connected on the Windows adapter "AmneziaVPN" (10.66.66.2),
+                    resumes when that adapter disconnects
+```
+
+It resumes on its own once the other client disconnects, unless the tunnel was
+stopped by hand in the meantime. To use both at the same time, give AWGSocks a
+configuration of its own: a second client created on the server, which comes
+with its own key and its own tunnel address.
+
+The check looks at the address only, so an unrelated VPN on a different server
+pauses the tunnel too if it happens to hand out the same address. That is not
+far fetched: `10.66.66.2` is the first client address of popular WireGuard
+install scripts. The adapter named in `status` tells you which client it is.
+
 ## No handshake
 
 `awgsocks status` shows `Last handshake : never`. Check, in order:

@@ -602,7 +602,7 @@ func shrinkRetry(t *testing.T, min, max time.Duration) {
 // startManagerWithStarter brings a Manager up with its tunnel start replaced,
 // so a test can make the first attempts fail the way they do at boot when the
 // network is not usable yet.
-func startManagerWithStarter(t *testing.T, starter func(context.Context, *awg.Tunnel) error) (*Manager, string) {
+func startManagerWithStarter(t *testing.T, starter func(context.Context, *awg.Tunnel) error, configure ...func(*Manager)) (*Manager, string) {
 	t.Helper()
 	appPath, socksAddr := writeTestEnvironment(t)
 
@@ -614,6 +614,9 @@ func startManagerWithStarter(t *testing.T, starter func(context.Context, *awg.Tu
 
 	m := NewManager(log, appPath)
 	m.startTunnel = starter
+	for _, c := range configure {
+		c(m)
+	}
 	if err := m.Start(); err != nil {
 		t.Fatalf("could not start the service: %v", err)
 	}

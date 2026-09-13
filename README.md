@@ -285,6 +285,7 @@ This must fail. If it prints your ISP address, there is a leak.
 | DNS search domains | Non-IP entries in `DNS` are treated as search domains and are not applied. A warning is emitted. |
 | ICMP | You cannot ping through the proxy, because SOCKS5 carries no ICMP. |
 | Single tunnel | One service instance runs one AmneziaWG configuration. |
+| One configuration, one client | A `.conf` cannot be connected in AWGSocks and in another client at the same time, because two clients with one key take the server session from each other. AWGSocks pauses while it sees that happen; see [TROUBLESHOOTING](docs/TROUBLESHOOTING.md#everything-loses-its-connection-while-another-vpn-app-is-connected). |
 | Packet counters | The AmneziaWG UAPI exposes byte counters only, so `status` reports bytes rather than packets. |
 | I1-I5 validation | The syntax of these can only be checked by the upstream device, which the `awgsocks check` dry run does. |
 | `range<uint16>` parameters | The official documentation types `ContentPaddingAddition` and the timing parameters as `range<uint16>` while the pinned upstream accepts `range<uint32>`. AWGSocks follows upstream and warns above 65535. |

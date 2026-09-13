@@ -63,8 +63,24 @@ type Manager struct {
 	started time.Time
 	running bool
 
+	// ctx lives as long as the running service. Work started from a shorter
+	// lived caller, such as a reload over the pipe, is bound to it instead.
+	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// tunnelWanted records whether the tunnel is meant to be up: auto_start or
+	// an explicit start says yes, an explicit stop says no. A pause leaves it
+	// alone, which is how the end of a pause knows whether to bring the tunnel
+	// back.
+	tunnelWanted bool
+
+	// pausedBy is set while the tunnel's own configuration is connected through
+	// another client on this machine, and conflictMu serialises the checks that
+	// set and clear it. See conflict.go for why the tunnel steps aside.
+	pausedBy      *hostAddress
+	conflictMu    sync.Mutex
+	listAddresses func() ([]hostAddress, error)
 
 	// startMu serialises every attempt to bring the tunnel up. Tunnel.Start
 	// checks whether it is running before it builds the device and only records
@@ -87,11 +103,23 @@ type Manager struct {
 // from appCfgPath (empty selects the default location).
 func NewManager(log *logging.Logger, appCfgPath string) *Manager {
 	return &Manager{
-		log:         log,
-		appCfgPath:  appCfgPath,
-		retryWake:   make(chan struct{}, 1),
-		startTunnel: func(ctx context.Context, t *awg.Tunnel) error { return t.Start(ctx) },
+		log:           log,
+		appCfgPath:    appCfgPath,
+		retryWake:     make(chan struct{}, 1),
+		startTunnel:   func(ctx context.Context, t *awg.Tunnel) error { return t.Start(ctx) },
+		listAddresses: hostAddresses,
 	}
+}
+
+// pausedError is what any attempt to bring the tunnel up returns during a
+// pause, so that a manual start explains itself instead of silently doing
+// nothing, and so that the retry loop can tell a pause from a failure.
+type pausedError struct{ by hostAddress }
+
+func (e pausedError) Error() string {
+	return fmt.Sprintf("the tunnel is paused because its configuration is connected on the Windows adapter %s, "+
+		"and two clients using one key take the session from each other; it resumes when that adapter disconnects",
+		e.by)
 }
 
 // Start loads configuration and brings up the tunnel, the SOCKS5 listener and
@@ -143,18 +171,27 @@ func (m *Manager) Start() error {
 	m.tunnel = tunnel
 	m.socks = socksSrv
 	m.pipe = pipeSrv
+	m.ctx = ctx
 	m.cancel = cancel
 	m.started = time.Now()
 	m.running = true
+	m.tunnelWanted = app.AutoStart
 	m.mu.Unlock()
 
 	if app.AutoStart {
+		// Checked before the first handshake, not after: the service can start
+		// while the same configuration is already connected elsewhere, and one
+		// handshake is enough to take the session from that client.
+		m.checkConflict()
 		if err := m.startTunnelOnce(ctx); err != nil {
-			// The tunnel failed to come up. SOCKS5 still listens and refuses
-			// every request explicitly, so nothing leaks silently, and the
-			// attempt is repeated rather than abandoned.
-			m.log.Errorf("could not start the AmneziaWG tunnel, retrying: %v", err)
-			m.retryStart(ctx)
+			var paused pausedError
+			if !errors.As(err, &paused) {
+				// The tunnel failed to come up. SOCKS5 still listens and
+				// refuses every request explicitly, so nothing leaks silently,
+				// and the attempt is repeated rather than abandoned.
+				m.log.Errorf("could not start the AmneziaWG tunnel, retrying: %v", err)
+				m.retryStart(ctx)
+			}
 		}
 	} else {
 		m.log.Infof("auto_start is off: the tunnel is idle, start it with `awgsocks reconnect`")
@@ -207,6 +244,7 @@ func (m *Manager) startNetworkWatcher(ctx context.Context) {
 				}
 				return
 			case <-watcher.Events():
+				m.networkChanged()
 				if timer == nil {
 					timer = time.NewTimer(networkChangeDebounce)
 				} else {
@@ -215,20 +253,38 @@ func (m *Manager) startNetworkWatcher(ctx context.Context) {
 				timerC = timer.C
 			case <-timerC:
 				timerC = nil
-				m.log.Infof("a Windows address changed, reopening the AmneziaWG socket")
-				m.mu.Lock()
-				t := m.tunnel
-				m.mu.Unlock()
-				if t != nil && t.Running() {
-					t.Reconnect()
-				} else {
-					// An address appearing is exactly the moment a tunnel that
-					// could not start for want of a network might now succeed.
-					m.wakeRetry()
-				}
+				m.networkSettled()
 			}
 		}
 	}()
+}
+
+// networkChanged runs on every address notification, before the debounce.
+//
+// The conflict check cannot wait for the burst to settle. The address that
+// reveals another client using this configuration is assigned as that client
+// connects, and networkSettled would otherwise answer it two seconds later with
+// a handshake that takes the session away from it.
+func (m *Manager) networkChanged() {
+	m.checkConflict()
+}
+
+// networkSettled runs once a burst of address notifications has gone quiet.
+func (m *Manager) networkSettled() {
+	if m.checkConflict() {
+		return
+	}
+	m.log.Infof("a Windows address changed, reopening the AmneziaWG socket")
+	m.mu.Lock()
+	t := m.tunnel
+	m.mu.Unlock()
+	if t != nil && t.Running() {
+		t.Reconnect()
+	} else {
+		// An address appearing is exactly the moment a tunnel that could not
+		// start for want of a network might now succeed.
+		m.wakeRetry()
+	}
 }
 
 // startTunnelOnce makes one serialised attempt to bring the tunnel up. It is a
@@ -240,14 +296,106 @@ func (m *Manager) startTunnelOnce(ctx context.Context) error {
 
 	m.mu.Lock()
 	tunnel := m.tunnel
+	pausedBy := m.pausedBy
 	m.mu.Unlock()
 	if tunnel == nil {
 		return errors.New("the service is not running")
+	}
+	// Read under startMu, the lock pause stops the tunnel under, so an attempt
+	// either sees the pause or finishes before pause stops what it built.
+	if pausedBy != nil {
+		return pausedError{by: *pausedBy}
 	}
 	if tunnel.Running() {
 		return nil
 	}
 	return m.startTunnel(ctx, tunnel)
+}
+
+// checkConflict pauses the tunnel when its own configuration has appeared on a
+// Windows adapter, and resumes it once that adapter no longer holds it. It
+// reports whether the tunnel is paused afterwards.
+func (m *Manager) checkConflict() bool {
+	m.conflictMu.Lock()
+	defer m.conflictMu.Unlock()
+
+	m.mu.Lock()
+	tunCfg, tunnel, list, was := m.tunCfg, m.tunnel, m.listAddresses, m.pausedBy
+	m.mu.Unlock()
+	if tunCfg == nil || tunnel == nil || list == nil {
+		return false
+	}
+
+	host, err := list()
+	if err != nil {
+		// Neither pausing nor resuming on a failed read: keeping the current
+		// state is the only choice that is right whichever way it would have
+		// gone.
+		m.log.Warnf("could not read the Windows adapter addresses, leaving the tunnel as it is: %v", err)
+		return was != nil
+	}
+
+	hit, found := configConflict(tunCfg.AddressPrefixes, host)
+	switch {
+	case found && was == nil:
+		m.pause(hit)
+		return true
+	case found:
+		m.mu.Lock()
+		m.pausedBy = &hit
+		m.mu.Unlock()
+		return true
+	case was != nil:
+		m.resume(*was)
+	}
+	return false
+}
+
+// pause takes the tunnel down and keeps it down until resume. The SOCKS5
+// listener stays up and refuses requests, exactly as it does for any other
+// tunnel that is not running, so nothing is sent outside the tunnel meanwhile.
+func (m *Manager) pause(hit hostAddress) {
+	m.log.Warnf("this AmneziaWG configuration is also connected on the Windows adapter %s; "+
+		"pausing the tunnel so the two clients stop taking the session from each other, "+
+		"the proxy refuses requests until that adapter disconnects", hit)
+	m.mu.Lock()
+	m.pausedBy = &hit
+	tunnel := m.tunnel
+	m.mu.Unlock()
+
+	m.cancelRetry()
+	m.startMu.Lock()
+	tunnel.Stop()
+	m.startMu.Unlock()
+}
+
+// resume ends a pause, and brings the tunnel back only if it is still meant to
+// be running. It goes through the retry loop, bound to the service rather than
+// to whoever noticed the change, so a start that fails is tried again.
+func (m *Manager) resume(was hostAddress) {
+	m.mu.Lock()
+	m.pausedBy = nil
+	wanted := m.tunnelWanted
+	ctx := m.ctx
+	m.mu.Unlock()
+
+	if !wanted || ctx == nil {
+		m.log.Infof("the configuration is no longer connected on the Windows adapter %s; "+
+			"the tunnel stays down, as it was not meant to be running", was)
+		return
+	}
+	m.log.Infof("the configuration is no longer connected on the Windows adapter %s, resuming the tunnel", was)
+	m.retryStart(ctx)
+}
+
+// PausedBy reports the adapter the tunnel is paused for, if it is paused.
+func (m *Manager) PausedBy() (hostAddress, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pausedBy == nil {
+		return hostAddress{}, false
+	}
+	return *m.pausedBy, true
 }
 
 // retryStart keeps trying to bring the tunnel up in the background, backing
@@ -295,6 +443,12 @@ func (m *Manager) retryStart(parent context.Context) {
 			}
 			if err == nil {
 				m.log.Infof("the AmneziaWG tunnel came up on attempt %d", attempt)
+				return
+			}
+			var paused pausedError
+			if errors.As(err, &paused) {
+				// Not a failure to back off from: the end of the pause starts
+				// a retry of its own.
 				return
 			}
 
@@ -513,6 +667,9 @@ func (m *Manager) Reload() (string, error) {
 	m.mu.Lock()
 	m.tunCfg = newTun
 	m.mu.Unlock()
+	// A new .conf can carry a different tunnel address, which can start or end
+	// a conflict with a client connected on this machine.
+	m.checkConflict()
 
 	// The SOCKS5 listener carries three settings, and none of them can be
 	// changed on a running server: the accept loop sizes its semaphore from
@@ -616,6 +773,9 @@ func (m *Manager) StartTunnel() error {
 	if tunnel == nil {
 		return errors.New("the service is not running")
 	}
+	m.mu.Lock()
+	m.tunnelWanted = true
+	m.mu.Unlock()
 	if tunnel.Running() {
 		return nil
 	}
@@ -637,7 +797,11 @@ func (m *Manager) StopTunnel() error {
 		return errors.New("the service is not running")
 	}
 	// Stopping is a statement that the tunnel should be down, so a retry that
-	// is still waiting to bring it up must not override it a moment later.
+	// is still waiting to bring it up must not override it a moment later, and
+	// neither may the end of a pause.
+	m.mu.Lock()
+	m.tunnelWanted = false
+	m.mu.Unlock()
 	m.cancelRetry()
 	m.startMu.Lock()
 	tunnel.Stop()
@@ -654,6 +818,7 @@ func (m *Manager) Status() *ipc.Status {
 	socksSrv := m.socks
 	started := m.started
 	running := m.running
+	pausedBy := m.pausedBy
 	m.mu.Unlock()
 
 	st := &ipc.Status{
@@ -698,6 +863,9 @@ func (m *Manager) Status() *ipc.Status {
 		st.Tunnel.Reconnects = tunnel.Reconnects()
 		st.Tunnel.LastError = tunnel.LastError()
 		st.Tunnel.StartedAt = tunnel.StartedAt()
+		if pausedBy != nil {
+			st.Tunnel.PausedBy = pausedBy.String()
+		}
 		ds := tunnel.DNSStats()
 		st.Tunnel.DNSCache = ipc.DNSCacheStatus{
 			Hits:      ds.Hits,

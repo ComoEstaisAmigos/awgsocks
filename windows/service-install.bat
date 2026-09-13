@@ -88,7 +88,7 @@ if errorlevel 1 (
 
 rem --- Wait for the tunnel, then prove the proxy actually answers --------------
 echo.
-echo Waiting for the AmneziaWG handshake...
+echo Waiting for the proxy to answer...
 set "READY="
 for /l %%i in (1,1,20) do (
     if not defined READY (
@@ -97,12 +97,21 @@ for /l %%i in (1,1,20) do (
         if not defined READY powershell -NoProfile -Command "Start-Sleep -Milliseconds 500" >nul 2>&1
     )
 )
+set "PAUSED="
+if defined READY call :READ_PAUSE
 
 echo.
 "%AWGSOCKS%" status
 
 echo.
-if defined READY (
+if defined PAUSED (
+    echo The service is installed, but the tunnel is paused: this configuration
+    echo is connected on the Windows adapter !PAUSED!.
+    echo.
+    echo The proxy refuses requests until that adapter disconnects, and the
+    echo tunnel resumes by itself when it does. To use both at once, give
+    echo AWGSocks a configuration of its own.
+) else if defined READY (
     echo The SOCKS5 proxy is accepting connections on %SOCKS%
 	echo.
     echo Point your browser or torrent client at it. Enable remote DNS.
@@ -154,6 +163,15 @@ exit /b 0
 :PROBE
 powershell -NoProfile -Command "try{$c=New-Object Net.Sockets.TcpClient;$c.Connect('127.0.0.1',10808);$c.Close();exit 0}catch{exit 1}" >nul 2>&1
 exit /b %errorlevel%
+
+rem An open port does not mean the proxy is carrying traffic: while the same
+rem configuration is connected through another client, the tunnel is paused and
+rem the proxy refuses requests. The management pipe comes up a moment after the
+rem port, so the question is asked a few times before giving up.
+:READ_PAUSE
+set "PAUSED="
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "for ($i = 0; $i -lt 10; $i++) { try { $s = (& $env:AWGSOCKS status --json | Out-String) | ConvertFrom-Json; if ($s.tunnel) { if ($s.tunnel.paused_by) { $s.tunnel.paused_by }; exit } } catch {}; Start-Sleep -Milliseconds 300 }"`) do set "PAUSED=%%P"
+exit /b 0
 
 :ELEVATE
 powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"

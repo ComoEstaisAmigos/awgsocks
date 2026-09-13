@@ -23,12 +23,12 @@ go build ./...
 | `internal/logging` | That no key material can reach a log line, level filtering, rotation |
 | `internal/dns` | Cache hits, coalescing of concurrent lookups, negative caching, the concurrency limit |
 | `internal/socks5` | The SOCKS5 protocol, IPv4, IPv6 and hostname destinations, UDP ASSOCIATE, reply code mapping, refusal to bind outside loopback, and **that the source contains no `net.Dial`** |
-| `internal/awg` | The upstream dry run, fail-closed behaviour, UAPI status parsing, dropping of secret fields, and **that the package contains no `net.Dial`** |
-| `internal/service` | Service lifecycle, port release on stop, that a broken configuration never replaces a healthy tunnel, what each reload applies, non-delayed start and the retry of a tunnel that cannot come up yet, and which ACL `repair` gives each file |
+| `internal/awg` | The upstream dry run, fail-closed behaviour, that H1-H4 come back from a running device exactly as configured, UAPI status parsing, dropping of secret fields, and **that the package contains no `net.Dial`** |
+| `internal/service` | Service lifecycle, port release on stop, that a broken configuration never replaces a healthy tunnel, what each reload applies, non-delayed start and the retry of a tunnel that cannot come up yet, that the tunnel pauses without a handshake while its configuration is connected through another client and resumes afterwards, and which ACL `repair` gives each file |
 | `internal/e2e` | **The end to end data path over real AmneziaWG**, with both UDP bind implementations |
 | `internal/winsys` | That the data directory ACL names SYSTEM and Administrators and nobody else, and that `config.json` is readable but not writable by a standard user |
 | `internal/version` | That `scripts/build.bat` stamps the same release version the code declares, that no document quotes an upstream version or commit other than the pinned one, and that the Go toolchain releases are packaged with is the one UPSTREAM.md names |
-| `cmd/awgsocks` | That the double click message names only the helper scripts that are really present, offers a command that runs in any shell, and that `scripts\package.ps1` ships exactly the scripts in `windows\` |
+| `cmd/awgsocks` | That the double click message names only the helper scripts that are really present, offers a command that runs in any shell, that `scripts\package.ps1` ships exactly the scripts in `windows\`, that `status` explains a pause, and that the service scripts read the pause from the JSON field the service actually sends |
 
 ### Race detector
 
@@ -224,6 +224,25 @@ Compare-Object (Get-Content before.txt) (Get-Content after.txt)
 ```
 
 The output should be empty.
+
+## Verifying that the pause sees a real client
+
+The service tests exercise the pause against a fake adapter list, because no
+automated run has another VPN client to offer. With one connected, check that
+the production reader finds the tunnel address on its adapter, giving the
+`Address` value from the `.conf` that client uses:
+
+```powershell
+$env:AWGSOCKS_LIVE_TUNNEL_ADDRESS = "10.66.66.2/32"
+go test ./internal/service -run TestSystemHostAddressesSeesALiveTunnelAdapter -v
+```
+
+Expected, with the AmneziaVPN app connected:
+
+```
+    conflict_test.go:147: found on adapter "AmneziaVPN" (10.66.66.2)
+--- PASS: TestSystemHostAddressesSeesALiveTunnelAdapter (0.01s)
+```
 
 ## Verifying open sockets
 

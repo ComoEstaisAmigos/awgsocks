@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/ComoEstaisAmigos/awgsocks/internal/ipc"
 )
 
 // TestDoubleClickHelpListsOnlyScriptsThatExist covers the case that made this
@@ -143,6 +146,55 @@ func TestReleasePackageShipsEveryHelperScript(t *testing.T) {
 	sort.Strings(want)
 	if strings.Join(inTree, ",") != strings.Join(want, ",") {
 		t.Errorf("windows\\ holds %v but the executable names %v", inTree, want)
+	}
+}
+
+// TestServiceScriptsReadThePauseFieldTheServiceSends ties the scripts to the
+// JSON they parse. service-start.bat and service-install.bat read
+// tunnel.paused_by out of `awgsocks status --json` to tell a paused tunnel from
+// a working one, and a renamed field would not break them loudly: they would
+// quietly go back to announcing that the proxy is accepting connections while
+// it refuses every request.
+func TestServiceScriptsReadThePauseFieldTheServiceSends(t *testing.T) {
+	jsonName := func(typ reflect.Type, field string) string {
+		f, ok := typ.FieldByName(field)
+		if !ok {
+			t.Fatalf("%s has no field %s", typ, field)
+		}
+		return strings.Split(f.Tag.Get("json"), ",")[0]
+	}
+	want := "$s." + jsonName(reflect.TypeOf(ipc.Status{}), "Tunnel") + "." +
+		jsonName(reflect.TypeOf(ipc.TunnelStatus{}), "PausedBy")
+
+	for _, script := range []string{"service-start.bat", "service-install.bat"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "windows", script))
+		if err != nil {
+			t.Fatalf("could not read %s: %v", script, err)
+		}
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%s does not read %s, the field the service sends for a paused tunnel", script, want)
+		}
+	}
+}
+
+// TestUsageEndsWithABlankLine keeps the prompt that follows `awgsocks --help`
+// from sitting directly under the last line of the notes.
+func TestUsageEndsWithABlankLine(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	usage(w)
+	w.Close()
+	out := <-done
+	if !strings.HasSuffix(out, ".\n\n") || strings.HasSuffix(out, "\n\n\n") {
+		t.Fatalf("the usage text should end with exactly one blank line, it ends with %q", out[len(out)-40:])
 	}
 }
 

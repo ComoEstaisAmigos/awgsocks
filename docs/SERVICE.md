@@ -67,6 +67,13 @@ backing off to once a minute, and at once whenever a network address appears.
 In the meantime `status` shows the tunnel `State` as `failed` with the reason
 under `Last error`, or as `connecting` while an attempt is under way.
 
+The tunnel also stays down, without a single handshake, while the same
+configuration is connected through another client on this machine, such as the
+AmneziaVPN app, and comes back when that client disconnects. Two clients with
+one key take the server session from each other, which cuts off every program
+routed through the other client; see
+[Everything loses its connection while another VPN app is connected](TROUBLESHOOTING.md#everything-loses-its-connection-while-another-vpn-app-is-connected).
+
 > [!WARNING]
 > Step three is a security measure, not a convenience. The service runs as
 > LocalSystem. If its binary stayed in a directory you can write to, such as the
@@ -157,9 +164,7 @@ MTU               : 1377
 AllowedIPs        : 0.0.0.0/0, ::/0
 DNS cache         : 37 entries, 214 hits, 46 coalesced, 39 tunnel queries (87% saved)
 AWG generation    : AmneziaWG 1.5 (Jc/Jmin/Jmax, S1-S4, H1-H4)
-Active AWG params : H1=301745575-401745574 H2=876826554-976826553
-                    H3=1337755454-1437755454 H4=1776593183-1876593183
-                    JC=10 JMAX=1000 JMIN=50 S1=150 S2=135 S3=107 S4=43
+Active AWG params : DISABLE_COOKIES=0 H1=301745575-401745574 H2=876826554-976826553 H3=1337755454-1437755454 H4=1776593183-1876593183 JC=10 JMAX=1000 JMIN=50 RANDOM_TRAILERS=0 S1=150 S2=135 S3=107 S4=43
 
 == Versions ==
 AWGSocks          : 1.0.0
@@ -172,7 +177,9 @@ Windows routes    : untouched (this is not a system wide VPN)
 ```
 
 The `Active AWG params` line is read back **from the running device**, so it is
-direct evidence that the configured parameters are actually in effect.
+direct evidence that the configured parameters are actually in effect. The
+device always reports `DISABLE_COOKIES` and `RANDOM_TRAILERS`, so they appear
+as `0`, meaning off, even when the configuration does not mention them.
 
 Add `--json` for machine readable output.
 

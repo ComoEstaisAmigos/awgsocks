@@ -55,6 +55,10 @@ type TunnelStatus struct {
 	MTU           int               `json:"mtu,omitempty"`
 	AllowedIPs    []string          `json:"allowed_ips,omitempty"`
 	DNSCache      DNSCacheStatus    `json:"dns_cache"`
+
+	// PausedBy names the Windows adapter the same configuration is connected
+	// on, while the tunnel steps aside for it.
+	PausedBy string `json:"paused_by,omitempty"`
 }
 
 // DNSCacheStatus reports in-tunnel resolver cache effectiveness. A low hit

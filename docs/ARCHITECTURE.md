@@ -68,9 +68,7 @@ device can be read straight out of `awgsocks status`, which reports them from
 the running device:
 
 ```
-Active AWG params : H1=301745575-401745574 H2=876826554-976826553
-                    H3=1337755454-1437755454 H4=1776593183-1876593183
-                    JC=10 JMAX=1000 JMIN=50 S1=150 S2=135 S3=107 S4=43
+Active AWG params : DISABLE_COOKIES=0 H1=301745575-401745574 H2=876826554-976826553 H3=1337755454-1437755454 H4=1776593183-1876593183 JC=10 JMAX=1000 JMIN=50 RANDOM_TRAILERS=0 S1=150 S2=135 S3=107 S4=43
 ```
 
 The `internal/e2e` test goes further: it stands up a second AmneziaWG device as
@@ -208,6 +206,7 @@ has been observed and reopened when the handshake goes stale. `DialTCP` calls
 | Tunnel state | Result | SOCKS5 reply |
 | --- | --- | --- |
 | Not running | `ErrTunnelDown`, immediately | `0x03` network unreachable |
+| Paused, its configuration connected through another client | `ErrTunnelDown`, immediately | `0x03` network unreachable |
 | Running, no handshake | `ErrNotReady` after 15 seconds, or 20 for a hostname, whose wait counts against in-tunnel resolution | `0x03` network unreachable |
 | Running, live handshake | The connection is made | `0x00` |
 

@@ -136,6 +136,36 @@ func TestTunnelStartsAndFailsClosed(t *testing.T) {
 	}
 }
 
+// TestDeviceReportsEveryHeaderRangeAsConfigured follows H1-H4 all the way from
+// the .conf, through the official parser and UAPI writer, into a running
+// device and back out of it. status presents that read back as evidence of what
+// is in force, so a range altered anywhere on the way, even by one, must fail
+// here rather than be shown to someone as proof.
+func TestDeviceReportsEveryHeaderRangeAsConfigured(t *testing.T) {
+	tun := New(testLogger(t), loadUserConfig(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := tun.Start(ctx); err != nil {
+		t.Fatalf("could not start the tunnel: %v", err)
+	}
+	defer tun.Stop()
+
+	st, err := tun.Stats()
+	if err != nil {
+		t.Fatalf("could not read the device state: %v", err)
+	}
+	for key, want := range map[string]string{
+		"h1": "301745575-401745574",
+		"h2": "876826554-976826553",
+		"h3": "1337755454-1437755454",
+		"h4": "1776593183-1876593183",
+	} {
+		if got := st.AWGParams[key]; got != want {
+			t.Errorf("%s: the device reports %q, the configuration says %q", key, got, want)
+		}
+	}
+}
+
 func TestStoppedTunnelReleasesEverything(t *testing.T) {
 	cfg := loadUserConfig(t)
 	tun := New(testLogger(t), cfg)

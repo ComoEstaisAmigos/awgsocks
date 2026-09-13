@@ -43,6 +43,10 @@ func printStatus(st *ipc.Status) {
 	fmt.Println()
 	fmt.Println("== AmneziaWG tunnel ==")
 	fmt.Printf("State             : %s\n", orDash(st.Tunnel.State))
+	if st.Tunnel.PausedBy != "" {
+		fmt.Printf("Paused            : this configuration is connected on the Windows adapter %s,\n", st.Tunnel.PausedBy)
+		fmt.Printf("                    resumes when that adapter disconnects\n")
+	}
 	fmt.Printf("Endpoint          : %s\n", orDash(st.Tunnel.Endpoint))
 	fmt.Printf("Last handshake    : %s\n", formatTime(st.Tunnel.LastHandshake))
 	fmt.Printf("Sent              : %s\n", humanBytes(st.Tunnel.TxBytes))
