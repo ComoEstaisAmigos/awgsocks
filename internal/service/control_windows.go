@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -40,6 +42,40 @@ type InstallOptions struct {
 	AutoStartTunnel bool
 	// StartService starts the service once installation succeeds.
 	StartService bool
+	Scripts      []string
+}
+
+var programFilesDir = func() (string, error) {
+	return windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, 0)
+}
+
+func programDir() (string, error) {
+	pf, err := programFilesDir()
+	if err != nil {
+		return "", fmt.Errorf("could not locate Program Files: %w", err)
+	}
+	return filepath.Join(pf, version.ServiceName), nil
+}
+
+var requiredPrivileges = []string{"SeChangeNotifyPrivilege"}
+
+func multiSZ(items []string) []uint16 {
+	var out []uint16
+	for _, s := range items {
+		out = append(out, utf16.Encode([]rune(s))...)
+		out = append(out, 0)
+	}
+	return append(out, 0)
+}
+
+func restrictPrivileges(s *mgr.Service) error {
+	buf := multiSZ(requiredPrivileges)
+	info := struct{ privileges *uint16 }{&buf[0]}
+	if err := windows.ChangeServiceConfig2(s.Handle, windows.SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO,
+		(*byte)(unsafe.Pointer(&info))); err != nil {
+		return fmt.Errorf("could not restrict the service privileges: %w", err)
+	}
+	return nil
 }
 
 // serviceConfig is how the service is registered.
@@ -61,6 +97,8 @@ func serviceConfig() mgr.Config {
 		DelayedAutoStart: false,
 		ServiceType:      windows.SERVICE_WIN32_OWN_PROCESS,
 		ErrorControl:     mgr.ErrorNormal,
+		ServiceStartName: winsys.ServiceAccount(version.ServiceName),
+		SidType:          windows.SERVICE_SID_TYPE_UNRESTRICTED,
 		// The tunnel is entirely userspace, so nothing beyond networking is
 		// required; the Tcpip service is enough for sockets.
 		Dependencies: []string{"Tcpip"},
@@ -74,15 +112,15 @@ func serviceConfig() mgr.Config {
 // It exists because Windows actively invites people to break them. Explorer
 // cannot open C:\ProgramData\AWGSocks and offers to "grant permanent access",
 // and accepting adds the interactive user to the directory with Full control.
-// Full control on a directory carries FILE_DELETE_CHILD, so awgsocks.exe can
-// then be deleted and replaced whatever its own ACL says, and the next service
-// start runs the replacement as LocalSystem. Recovering from one wrong click
+// Full control on a directory carries FILE_DELETE_CHILD, so client.conf and
+// config.json can then be replaced whatever their own ACLs say, and the private
+// key read along the way. Recovering from one wrong click
 // should not mean reinstalling.
 func RepairPermissions() error {
 	if err := winsys.RequireElevation("repairing the data directory permissions"); err != nil {
 		return err
 	}
-	return repairPermissions(os.Stdout, realACLs)
+	return repairPermissions(os.Stdout, realACLs())
 }
 
 // aclOps is the set of ACL calls repairPermissions makes, injected so that a
@@ -91,15 +129,26 @@ func RepairPermissions() error {
 // would publish a private key, and handing config.json the strict one would
 // put back the friction this all exists to remove.
 type aclOps struct {
-	ensureDir func(string) error
-	protect   func(string) error
-	readable  func(string) error
+	dataDir    func(string) error
+	logDir     func(string) error
+	secret     func(string) error
+	readable   func(string) error
+	programDir func(string) error
+	program    func(string) error
+	protect    func(string) error
 }
 
-var realACLs = aclOps{
-	ensureDir: winsys.EnsureDir,
-	protect:   winsys.Protect,
-	readable:  winsys.ProtectUserReadable,
+func realACLs() aclOps {
+	sid := winsys.ServiceSID(version.ServiceName)
+	return aclOps{
+		dataDir:    func(p string) error { return winsys.EnsureDataDir(p, sid) },
+		logDir:     func(p string) error { return winsys.EnsureLogDir(p, sid) },
+		secret:     func(p string) error { return winsys.ProtectSecret(p, sid) },
+		readable:   func(p string) error { return winsys.ProtectUserReadable(p, sid) },
+		programDir: func(p string) error { return winsys.EnsureProgramDir(p, sid) },
+		program:    func(p string) error { return winsys.ProtectProgram(p, sid) },
+		protect:    winsys.Protect,
+	}
 }
 
 func repairPermissions(w io.Writer, acl aclOps) error {
@@ -110,33 +159,34 @@ func repairPermissions(w io.Writer, acl aclOps) error {
 
 	// Directories first: closing the parent is what removes the escalation
 	// path, and every file below is then secured on its own terms.
-	for _, dir := range []string{root, config.LogDir()} {
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		if err := acl.ensureDir(dir); err != nil {
+	if err := acl.dataDir(root); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "  %-52s SYSTEM and Administrators, read for the service\n", root)
+	if _, err := os.Stat(config.LogDir()); err == nil {
+		if err := acl.logDir(config.LogDir()); err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "  %-52s SYSTEM and Administrators only\n", dir)
+		fmt.Fprintf(w, "  %-52s SYSTEM and Administrators, modify for the service\n", config.LogDir())
 	}
 
 	// The tunnel configuration is read from config.json rather than assumed,
 	// because an --in-place install leaves it outside the data directory.
 	if app, err := config.LoadApp(""); err == nil && app.ConfigPath != "" {
 		if _, serr := os.Stat(app.ConfigPath); serr == nil {
-			if err := acl.protect(app.ConfigPath); err != nil {
+			if err := acl.secret(app.ConfigPath); err != nil {
 				return err
 			}
-			fmt.Fprintf(w, "  %-52s SYSTEM and Administrators only (holds the private key)\n", app.ConfigPath)
+			fmt.Fprintf(w, "  %-52s SYSTEM and Administrators, read for the service (holds the private key)\n", app.ConfigPath)
 		}
 	}
 
-	exePath := filepath.Join(root, "awgsocks.exe")
-	if _, err := os.Stat(exePath); err == nil {
-		if err := acl.protect(exePath); err != nil {
+	legacy := filepath.Join(root, "awgsocks.exe")
+	if _, err := os.Stat(legacy); err == nil {
+		if err := acl.protect(legacy); err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "  %-52s SYSTEM and Administrators only (the service binary)\n", exePath)
+		fmt.Fprintf(w, "  %-52s SYSTEM and Administrators only (left by an older version)\n", legacy)
 	}
 
 	appPath := config.AppConfigPath()
@@ -145,6 +195,23 @@ func repairPermissions(w io.Writer, acl aclOps) error {
 			return err
 		}
 		fmt.Fprintf(w, "  %-52s readable by any local user, writable by admins\n", appPath)
+	}
+
+	if dir, err := programDir(); err == nil {
+		if entries, rerr := os.ReadDir(dir); rerr == nil {
+			if err := acl.programDir(dir); err != nil {
+				return err
+			}
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				if err := acl.program(filepath.Join(dir, e.Name())); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintf(w, "  %-52s readable and runnable by any user, writable by admins\n", dir)
+		}
 	}
 
 	fmt.Fprintln(w, "\nPermissions repaired. Nothing else was changed.")
@@ -171,11 +238,26 @@ func Install(opts InstallOptions) error {
 		return fmt.Errorf("the configuration is invalid, nothing was installed: %w", err)
 	}
 
-	root := config.RootDir()
-	if err := winsys.EnsureDir(root); err != nil {
+	scm, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("could not connect to the service control manager: %w", err)
+	}
+	defer scm.Disconnect()
+	if s, err := scm.OpenService(version.ServiceName); err == nil {
+		s.Close()
+		return fmt.Errorf("the %s service is already installed: run `awgsocks uninstall` first", version.ServiceName)
+	}
+
+	progDir, err := programDir()
+	if err != nil {
 		return err
 	}
-	if err := winsys.EnsureDir(config.LogDir()); err != nil {
+	sid := winsys.ServiceSID(version.ServiceName)
+	root := config.RootDir()
+	if err := winsys.EnsureDataDir(root, sid); err != nil {
+		return err
+	}
+	if err := winsys.EnsureLogDir(config.LogDir(), sid); err != nil {
 		return err
 	}
 
@@ -189,23 +271,15 @@ func Install(opts InstallOptions) error {
 			fmt.Printf("Configuration copied: %s -> %s\n", srcPath, destPath)
 		}
 	}
-	if err := winsys.Protect(destPath); err != nil {
+	if err := winsys.ProtectSecret(destPath, sid); err != nil {
 		return err
 	}
 
-	app := config.DefaultApp()
-	app.ConfigPath = destPath
-	app.AutoStart = opts.AutoStartTunnel
-	if opts.Socks5Listen != "" {
-		app.Socks5Listen = opts.Socks5Listen
-	}
-	if opts.LogLevel != "" {
-		app.LogLevel = opts.LogLevel
-	}
-	if err := app.Normalize(); err != nil {
+	appPath := config.AppConfigPath()
+	app, kept, err := installApp(appPath, destPath, opts)
+	if err != nil {
 		return err
 	}
-	appPath := config.AppConfigPath()
 	if err := app.Save(appPath); err != nil {
 		return err
 	}
@@ -214,7 +288,7 @@ func Install(opts InstallOptions) error {
 	// is therefore readable by any local user and writable only by SYSTEM and
 	// Administrators. The directory around it stays closed either way, so this
 	// opens no path to replacing the service binary.
-	if err := winsys.ProtectUserReadable(appPath); err != nil {
+	if err := winsys.ProtectUserReadable(appPath, sid); err != nil {
 		return err
 	}
 
@@ -224,38 +298,26 @@ func Install(opts InstallOptions) error {
 	}
 	exePath, _ = filepath.Abs(exePath)
 
-	// A LocalSystem service must not be launched from a directory that a
-	// standard user can write to: anyone able to replace the file would get
-	// code execution as SYSTEM. The binary is therefore copied into the
-	// AWGSocks data directory, whose ACL allows only SYSTEM and
-	// Administrators, and the service is registered against that copy.
-	servicePath := filepath.Join(root, "awgsocks.exe")
-	if !strings.EqualFold(exePath, servicePath) {
-		if err := copyFile(exePath, servicePath); err != nil {
-			return fmt.Errorf("could not copy the executable into the protected directory: %w", err)
-		}
-		fmt.Printf("Executable copied: %s -> %s\n", exePath, servicePath)
-	}
-	if err := winsys.Protect(servicePath); err != nil {
+	// A service must not be launched from a directory that a standard user can
+	// write to: anyone able to replace the file would get code execution as
+	// the service account. The binary and the scripts are therefore copied into
+	// Program Files, which any user may read and run but only Administrators
+	// may change, and the service is registered against that copy.
+	servicePath, err := installProgram(exePath, progDir, opts.Scripts, sid)
+	if err != nil {
 		return err
 	}
-
-	scm, err := mgr.Connect()
-	if err != nil {
-		return fmt.Errorf("could not connect to the service control manager: %w", err)
-	}
-	defer scm.Disconnect()
-
-	if s, err := scm.OpenService(version.ServiceName); err == nil {
-		s.Close()
-		return fmt.Errorf("the %s service is already installed: run `awgsocks uninstall` first", version.ServiceName)
-	}
+	removeLegacyBinary(root)
 
 	s, err := scm.CreateService(version.ServiceName, servicePath, serviceConfig(), "service")
 	if err != nil {
 		return fmt.Errorf("could not create the service: %w", err)
 	}
 	defer s.Close()
+	if err := restrictPrivileges(s); err != nil {
+		s.Delete()
+		return fmt.Errorf("%w, so the service was not installed", err)
+	}
 
 	// Let the SCM restart the service after an unexpected exit.
 	recovery := []mgr.RecoveryAction{
@@ -269,7 +331,15 @@ func Install(opts InstallOptions) error {
 
 	fmt.Printf("The %s service has been installed.\n", version.ServiceName)
 	fmt.Printf("  Service binary : %s\n", servicePath)
+	fmt.Printf("  Scripts        : %s\n", progDir)
+	fmt.Printf("  Service account: %s, privileges limited to %s\n",
+		winsys.ServiceAccount(version.ServiceName), strings.Join(requiredPrivileges, ", "))
 	fmt.Printf("  Configuration  : %s\n", destPath)
+	if kept {
+		fmt.Printf("  Settings       : kept from the existing %s\n", appPath)
+	} else {
+		fmt.Printf("  Settings       : %s written with the defaults\n", appPath)
+	}
 	fmt.Printf("  App settings   : %s\n", appPath)
 	fmt.Printf("  Logs           : %s\n", config.LogDir())
 	fmt.Printf("  SOCKS5         : %s\n", app.Socks5Listen)
@@ -299,7 +369,10 @@ func Install(opts InstallOptions) error {
 
 // Uninstall stops and removes the service. Unless purge is set, the operator
 // AmneziaWG configuration is kept: deleting it is never implicit.
-func Uninstall(purge bool) error {
+func Uninstall(purge, keepSettings bool) error {
+	if purge && keepSettings {
+		return errors.New("--purge deletes the settings that --keep-settings is asked to keep, so the two cannot be combined")
+	}
 	if err := winsys.RequireElevation("removing the service"); err != nil {
 		return err
 	}
@@ -331,25 +404,11 @@ func Uninstall(purge bool) error {
 	root := config.RootDir()
 	confPath := config.TunnelConfigPath()
 
-	if err := os.RemoveAll(config.LogDir()); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("Warning: could not delete the log directory: %v\n", err)
-	} else {
-		fmt.Printf("Logs deleted: %s\n", config.LogDir())
-	}
-	if err := os.Remove(config.AppConfigPath()); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("Warning: could not delete config.json: %v\n", err)
-	}
-
-	// Remove the service binary that install copied into the protected
-	// directory. If uninstall is being run from that very copy the file is
-	// locked, so say what to do rather than failing.
-	servicePath := filepath.Join(root, "awgsocks.exe")
-	if _, statErr := os.Stat(servicePath); statErr == nil {
-		if err := os.Remove(servicePath); err != nil {
-			fmt.Printf("Warning: could not delete the service binary, it may be in use: %s\n", servicePath)
-			fmt.Println("You can delete that file by hand later.")
-		} else {
-			fmt.Printf("Service binary deleted: %s\n", servicePath)
+	removeInstalledData(os.Stdout, keepSettings)
+	removeLegacyBinary(root)
+	if dir, err := programDir(); err == nil {
+		if _, serr := os.Stat(dir); serr == nil {
+			fmt.Printf("The program and its scripts were kept: %s\n", dir)
 		}
 	}
 
@@ -374,6 +433,96 @@ func Uninstall(purge bool) error {
 		os.Remove(root)
 	}
 	return nil
+}
+
+func installApp(appPath, destPath string, opts InstallOptions) (app *config.App, kept bool, err error) {
+	app = config.DefaultApp()
+	if _, serr := os.Stat(appPath); serr == nil {
+		if existing, lerr := config.LoadApp(appPath); lerr == nil {
+			app, kept = existing, true
+		} else {
+			fmt.Printf("Warning: the existing settings could not be read, so the defaults are used: %v\n", lerr)
+		}
+	}
+	app.ConfigPath = destPath
+	if !opts.AutoStartTunnel {
+		app.AutoStart = false
+	}
+	if opts.Socks5Listen != "" {
+		app.Socks5Listen = opts.Socks5Listen
+	}
+	if opts.LogLevel != "" {
+		app.LogLevel = opts.LogLevel
+	}
+	if err := app.Normalize(); err != nil {
+		return nil, false, err
+	}
+	return app, kept, nil
+}
+
+func removeInstalledData(w io.Writer, keepSettings bool) {
+	if keepSettings {
+		fmt.Fprintf(w, "Settings and logs kept for the next install: %s, %s\n", config.AppConfigPath(), config.LogDir())
+		return
+	}
+	if err := os.RemoveAll(config.LogDir()); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(w, "Warning: could not delete the log directory: %v\n", err)
+	} else {
+		fmt.Fprintf(w, "Logs deleted: %s\n", config.LogDir())
+	}
+	if err := os.Remove(config.AppConfigPath()); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(w, "Warning: could not delete config.json: %v\n", err)
+	}
+}
+
+func installProgram(exePath, dir string, scripts []string, sid string) (string, error) {
+	if err := winsys.EnsureProgramDir(dir, sid); err != nil {
+		return "", err
+	}
+	servicePath := filepath.Join(dir, "awgsocks.exe")
+	type copyJob struct{ src, dst string }
+	jobs := []copyJob{{exePath, servicePath}}
+	for _, name := range scripts {
+		src := filepath.Join(filepath.Dir(exePath), name)
+		if _, err := os.Stat(src); err == nil {
+			jobs = append(jobs, copyJob{src, filepath.Join(dir, name)})
+		}
+	}
+	for _, j := range jobs {
+		if !strings.EqualFold(filepath.Clean(j.src), filepath.Clean(j.dst)) {
+			if err := copyWhenReleased(j.src, j.dst); err != nil {
+				return "", fmt.Errorf("could not copy %s into %s: %w", filepath.Base(j.src), dir, err)
+			}
+			fmt.Printf("Copied: %s -> %s\n", j.src, j.dst)
+		}
+		if err := winsys.ProtectProgram(j.dst, sid); err != nil {
+			return "", err
+		}
+	}
+	return servicePath, nil
+}
+
+func copyWhenReleased(src, dst string) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = copyFile(src, dst); err == nil {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return err
+}
+
+func removeLegacyBinary(root string) {
+	legacy := filepath.Join(root, "awgsocks.exe")
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	if err := os.Remove(legacy); err != nil {
+		fmt.Printf("Warning: could not delete %s, left by an older version: %v\n", legacy, err)
+		return
+	}
+	fmt.Printf("Deleted the service binary an older version kept in %s\n", root)
 }
 
 // StartService starts the installed service.

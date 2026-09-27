@@ -25,7 +25,7 @@ const secureSDDL = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 //
 // It is deliberately read only. The directory stays closed, so this grants no
 // way to add, replace or delete anything there, and the file itself cannot be
-// written. That matters because config.json names the .conf the LocalSystem
+// written. That matters because config.json names the .conf the AWGSocks
 // service loads: being able to rewrite it would let a standard user redirect
 // what that service runs, which is a privilege boundary even though AWGSocks
 // never executes anything out of a configuration file.
@@ -34,6 +34,35 @@ const secureSDDL = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 // carrying this DACL can be opened by its full path even though the directory
 // around it refuses to be listed.
 const readableSDDL = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)"
+
+const (
+	readExecute = "0x1200a9"
+	modify      = "0x1301bf"
+)
+
+func dataDirSDDL(serviceSID string) string {
+	return "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;" + serviceSID + ")"
+}
+
+func logDirSDDL(serviceSID string) string {
+	return "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;" + modify + ";;;" + serviceSID + ")"
+}
+
+func secretSDDL(serviceSID string) string {
+	return "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;" + serviceSID + ")"
+}
+
+func userReadableSDDL(serviceSID string) string {
+	return readableSDDL + "(A;;FR;;;" + serviceSID + ")"
+}
+
+func programDirSDDL(serviceSID string) string {
+	return "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;" + readExecute + ";;;BU)(A;OICI;" + readExecute + ";;;" + serviceSID + ")"
+}
+
+func programFileSDDL(serviceSID string) string {
+	return "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;" + readExecute + ";;;BU)(A;;" + readExecute + ";;;" + serviceSID + ")"
+}
 
 // ErrNotElevated is returned by operations that require Administrator rights.
 var ErrNotElevated = errors.New("this operation requires Administrator privileges")
@@ -59,10 +88,7 @@ func RequireElevation(action string) error {
 // EnsureDir creates a directory if needed and locks its ACL down to
 // SYSTEM and Administrators.
 func EnsureDir(path string) error {
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return fmt.Errorf("could not create %s: %w", path, err)
-	}
-	return Protect(path)
+	return ensureDir(path, secureSDDL)
 }
 
 // Protect replaces the DACL of path with the AWGSocks secure DACL. It is used
@@ -101,8 +127,35 @@ func applyDACL(path, sddl string) error {
 // Use it only for files with nothing sensitive in them. client.conf holds the
 // private key and the log files hold every destination reached at debug level,
 // so both keep the stricter Protect.
-func ProtectUserReadable(path string) error {
-	return applyDACL(path, readableSDDL)
+func ProtectUserReadable(path, serviceSID string) error {
+	return applyDACL(path, userReadableSDDL(serviceSID))
+}
+
+func EnsureDataDir(path, serviceSID string) error {
+	return ensureDir(path, dataDirSDDL(serviceSID))
+}
+
+func EnsureLogDir(path, serviceSID string) error {
+	return ensureDir(path, logDirSDDL(serviceSID))
+}
+
+func EnsureProgramDir(path, serviceSID string) error {
+	return ensureDir(path, programDirSDDL(serviceSID))
+}
+
+func ProtectSecret(path, serviceSID string) error {
+	return applyDACL(path, secretSDDL(serviceSID))
+}
+
+func ProtectProgram(path, serviceSID string) error {
+	return applyDACL(path, programFileSDDL(serviceSID))
+}
+
+func ensureDir(path, sddl string) error {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("could not create %s: %w", path, err)
+	}
+	return applyDACL(path, sddl)
 }
 
 // ProtectTree secures a directory and every file directly inside it.
@@ -128,5 +181,6 @@ func ProtectTree(dir string) error {
 // DescribePermissions returns a human-readable summary of what AWGSocks locks
 // down, for use in documentation output.
 func DescribePermissions() string {
-	return "full access for SYSTEM and Administrators, inheritance disabled (" + secureSDDL + ")"
+	return "SYSTEM and Administrators only, plus read for the service account (logs: modify); " +
+		"the program directory is readable by any user and writable by Administrators only"
 }

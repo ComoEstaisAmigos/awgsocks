@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,7 @@ import (
 
 	"github.com/ComoEstaisAmigos/awgsocks/internal/config"
 	"github.com/ComoEstaisAmigos/awgsocks/internal/dns"
+	"github.com/ComoEstaisAmigos/awgsocks/internal/localdns"
 	"github.com/ComoEstaisAmigos/awgsocks/internal/logging"
 )
 
@@ -541,7 +543,7 @@ func (t *Tunnel) DialTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, er
 }
 
 // LookupHost resolves a hostname using only the DNS servers named in the
-// AmneziaWG configuration, queried from inside the tunnel.
+// AmneziaWG configuration: in the tunnel, or on this PC for a loopback server.
 //
 // This is the SOCKS5 remote-DNS (socks5h) behaviour: the Windows resolver is
 // never consulted for SOCKS destinations, so a hostname request cannot leak the
@@ -556,7 +558,7 @@ func (t *Tunnel) LookupHost(ctx context.Context, host string) ([]netip.Addr, err
 	if !running {
 		return nil, ErrTunnelDown
 	}
-	if cfg == nil || len(cfg.DNS) == 0 {
+	if cfg == nil || (len(cfg.DNS) == 0 && len(cfg.LocalDNS) == 0) {
 		return nil, ErrNoDNS
 	}
 	return t.resolver.Lookup(ctx, host)
@@ -573,12 +575,35 @@ func (t *Tunnel) lookupUncached(ctx context.Context, host string) ([]netip.Addr,
 	t.mu.RLock()
 	tnet := t.tnet
 	running := t.running
+	cfg := t.cfg
 	t.mu.RUnlock()
 	if !running || tnet == nil {
 		return nil, ErrTunnelDown
 	}
 	if err := t.WaitReady(ctx); err != nil {
 		return nil, err
+	}
+
+	source := "in-tunnel DNS"
+	query := func(ctx context.Context, _ int) ([]netip.Addr, error) {
+		names, err := tnet.LookupContextHost(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]netip.Addr, 0, len(names))
+		for _, n := range names {
+			if a, perr := netip.ParseAddr(n); perr == nil {
+				out = append(out, a.Unmap())
+			}
+		}
+		return out, nil
+	}
+	if cfg != nil && len(cfg.LocalDNS) > 0 {
+		source = "local DNS"
+		network := lookupNetwork(cfg)
+		query = func(ctx context.Context, attempt int) ([]netip.Addr, error) {
+			return localdns.Lookup(ctx, cfg.LocalDNS[(attempt-1)%len(cfg.LocalDNS)], network, host)
+		}
 	}
 
 	var lastErr error
@@ -588,20 +613,14 @@ func (t *Tunnel) lookupUncached(ctx context.Context, host string) ([]netip.Addr,
 			break
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, dnsAttemptTimeouts[attempt-1])
-		names, err := tnet.LookupContextHost(attemptCtx, host)
+		out, err := query(attemptCtx, attempt)
 		cancel()
 
 		if err == nil {
-			out := make([]netip.Addr, 0, len(names))
-			for _, n := range names {
-				if a, perr := netip.ParseAddr(n); perr == nil {
-					out = append(out, a.Unmap())
-				}
-			}
 			if len(out) > 0 {
 				return out, nil
 			}
-			return nil, fmt.Errorf("in-tunnel DNS returned no usable address for %s", host)
+			return nil, fmt.Errorf("%s returned no usable address for %s", source, host)
 		}
 
 		lastErr = err
@@ -618,19 +637,17 @@ func (t *Tunnel) lookupUncached(ctx context.Context, host string) ([]netip.Addr,
 		//
 		// Confirming costs close to nothing, because a name that really does
 		// not exist is answered immediately rather than waiting out a timeout.
-		var dnsErr *net.DNSError
-		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-			if notFound {
-				break
-			}
-			notFound = true
+		retry, nf := retryDecision(err, notFound)
+		notFound = nf
+		if !retry {
+			break
 		}
 		if attempt < len(dnsAttemptTimeouts) {
-			t.log.Debugf("in-tunnel DNS attempt %d/%d failed for %s: %v",
-				attempt, len(dnsAttemptTimeouts), host, err)
+			t.log.Debugf("%s attempt %d/%d failed for %s: %v",
+				source, attempt, len(dnsAttemptTimeouts), host, err)
 		}
 	}
-	return nil, fmt.Errorf("in-tunnel DNS resolution failed for %s: %w", host, lastErr)
+	return nil, fmt.Errorf("%s resolution failed for %s: %w", source, host, lastErr)
 }
 
 // ListenUDP opens an unconnected UDP socket inside the tunnel.
@@ -677,7 +694,7 @@ func familyName(ipv6 bool) string {
 func (t *Tunnel) HasDNS() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.cfg != nil && len(t.cfg.DNS) > 0
+	return t.cfg != nil && (len(t.cfg.DNS) > 0 || len(t.cfg.LocalDNS) > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -939,12 +956,41 @@ func stackEqual(a, b *config.Tunnel) bool {
 			return false
 		}
 	}
-	return true
+	return slices.Equal(a.LocalDNS, b.LocalDNS)
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+func retryDecision(err error, notFoundSeen bool) (retry, notFound bool) {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsNotFound {
+			return !notFoundSeen, true
+		}
+		if dnsErr.IsTimeout || dnsErr.Err == "i/o timeout" {
+			return true, notFoundSeen
+		}
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true, notFoundSeen
+	}
+	return errors.Is(err, context.DeadlineExceeded), notFoundSeen
+}
+
+func lookupNetwork(cfg *config.Tunnel) string {
+	v4, v6 := cfg.HasFamily(false), cfg.HasFamily(true)
+	switch {
+	case v4 && !v6:
+		return "ip4"
+	case v6 && !v4:
+		return "ip6"
+	default:
+		return "ip"
+	}
+}
 
 func formatPrefixes(ps []netip.Prefix) string {
 	parts := make([]string, 0, len(ps))

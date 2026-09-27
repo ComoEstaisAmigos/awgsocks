@@ -83,6 +83,8 @@ type Tunnel struct {
 	// DNS are the resolvers reachable through the tunnel (from [Interface] DNS).
 	DNS []netip.Addr
 
+	LocalDNS []netip.Addr
+
 	// DNSSearch holds non-IP DNS entries (search domains). AWGSocks does not
 	// implement search-domain expansion; the field exists so that its presence
 	// can be reported rather than silently dropped.
@@ -253,7 +255,24 @@ func (t *Tunnel) finalize() error {
 		if !ok {
 			return fmt.Errorf("invalid DNS address: %s", d.String())
 		}
-		t.DNS = append(t.DNS, addr.Unmap())
+		addr = addr.Unmap()
+		if addr.IsLoopback() {
+			t.LocalDNS = append(t.LocalDNS, addr)
+		} else {
+			t.DNS = append(t.DNS, addr)
+		}
+	}
+	if len(t.LocalDNS) > 0 {
+		t.Warnings = append(t.Warnings, fmt.Sprintf(
+			"DNS %s is a resolver on this PC: SOCKS5 hostname lookups are sent to it outside the tunnel, "+
+				"and whatever it forwards upstream leaves over the normal connection. Connections still go only through the tunnel",
+			joinAddrs(t.LocalDNS)))
+		if len(t.DNS) > 0 {
+			t.Warnings = append(t.Warnings, fmt.Sprintf(
+				"DNS %s is ignored while a resolver on this PC is configured, so a stopped local resolver makes lookups fail instead of bypassing it",
+				joinAddrs(t.DNS)))
+			t.DNS = nil
+		}
 	}
 	t.DNSSearch = cfg.Interface.DNSSearch
 	if len(t.DNSSearch) > 0 {
@@ -261,7 +280,7 @@ func (t *Tunnel) finalize() error {
 			"DNS search domains (%s) are not applied: AWGSocks only resolves fully qualified names",
 			strings.Join(t.DNSSearch, ", ")))
 	}
-	if len(t.DNS) == 0 {
+	if len(t.DNS) == 0 && len(t.LocalDNS) == 0 {
 		t.Warnings = append(t.Warnings,
 			"[Interface] DNS is not set: hostname requests over SOCKS5 will be refused and only IP destinations will work")
 	}
@@ -436,7 +455,7 @@ func validateScan(s *configScan) ([]string, error) {
 	for _, e := range s.iface {
 		if _, isHook := scriptHookKeys[e.key]; isHook {
 			return nil, fmt.Errorf(
-				"line %d: %q is not supported: AWGSocks runs as a LocalSystem service and does not "+
+				"line %d: %q is not supported: AWGSocks runs as a Windows service and does not "+
 					"execute commands from a configuration file. Remove this key",
 				e.line, e.key)
 		}
@@ -874,4 +893,12 @@ func tunnelNameFromPath(path string) string {
 		return "awgsocks"
 	}
 	return base
+}
+
+func joinAddrs(addrs []netip.Addr) string {
+	parts := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		parts = append(parts, a.String())
+	}
+	return strings.Join(parts, ", ")
 }

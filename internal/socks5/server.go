@@ -13,9 +13,9 @@
 // # Hostname handling
 //
 // A CONNECT request carrying ATYP=DOMAINNAME is resolved by Dialer.LookupHost,
-// which queries only the DNS servers named in the AmneziaWG configuration, from
-// inside the tunnel. This is socks5h behaviour: the Windows resolver is never
-// used for SOCKS destinations.
+// which queries only the DNS servers named in the AmneziaWG configuration, in
+// the tunnel or, for a loopback server, on this PC. This is socks5h behaviour:
+// the Windows resolver is never used for SOCKS destinations.
 package socks5
 
 import (
@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ComoEstaisAmigos/awgsocks/internal/awg"
 	"github.com/ComoEstaisAmigos/awgsocks/internal/logging"
 )
 
@@ -111,6 +112,8 @@ type Stats struct {
 	Total       int64  `json:"total_connections"`
 	Rejected    int64  `json:"rejected_connections"`
 	Failed      int64  `json:"failed_connections"`
+	Hostname    int64  `json:"hostname_requests"`
+	Unresolved  int64  `json:"unresolved_requests"`
 	BytesToPeer uint64 `json:"bytes_to_peer"`
 	BytesToUser uint64 `json:"bytes_from_peer"`
 
@@ -142,6 +145,8 @@ type Server struct {
 	statTotal    atomic.Int64
 	statRejected atomic.Int64
 	statFailed   atomic.Int64
+	statHostname atomic.Int64
+	statNoName   atomic.Int64
 	statTx       atomic.Uint64
 	statRx       atomic.Uint64
 
@@ -259,6 +264,8 @@ func (s *Server) Stats() Stats {
 		Total:       s.statTotal.Load(),
 		Rejected:    s.statRejected.Load(),
 		Failed:      s.statFailed.Load(),
+		Hostname:    s.statHostname.Load(),
+		Unresolved:  s.statNoName.Load(),
 		BytesToPeer: s.statTx.Load(),
 		BytesToUser: s.statRx.Load(),
 
@@ -556,14 +563,26 @@ func readRequest(c net.Conn) (cmd byte, dest destination, err error) {
 	return cmd, dest, nil
 }
 
+func routable(addrs []netip.Addr) []netip.Addr {
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		if a = a.Unmap(); !a.IsUnspecified() {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // connect resolves the destination when needed and opens the tunnelled
 // connection. It returns the SOCKS5 reply code to send on failure.
 func (s *Server) connect(dest destination) (net.Conn, netip.AddrPort, byte) {
 	var candidates []netip.Addr
 
 	if dest.host != "" {
+		s.statHostname.Add(1)
 		if !s.dialer.HasDNS() {
-			s.log.Warnf("hostname request for %s rejected: no in-tunnel DNS is configured, "+
+			s.statNoName.Add(1)
+			s.log.Warnf("hostname request for %s rejected: no DNS server is configured, "+
 				"and the system resolver will not be used", dest.host)
 			return nil, netip.AddrPort{}, repHostUnreachable
 		}
@@ -571,11 +590,23 @@ func (s *Server) connect(dest destination) (net.Conn, netip.AddrPort, byte) {
 		addrs, err := s.dialer.LookupHost(ctx, dest.host)
 		cancel()
 		if err != nil {
-			s.log.Debugf("in-tunnel DNS resolution failed for %s: %v", dest.host, err)
+			if !errors.Is(err, awg.ErrTunnelDown) && !errors.Is(err, awg.ErrNotReady) {
+				s.statNoName.Add(1)
+			}
+			s.log.Debugf("DNS resolution failed for %s: %v", dest.host, err)
 			return nil, netip.AddrPort{}, replyForError(err, repHostUnreachable)
 		}
-		candidates = addrs
+		candidates = routable(addrs)
+		if len(candidates) == 0 {
+			s.statNoName.Add(1)
+			s.log.Debugf("%s resolved only to 0.0.0.0 or ::, which is how a blocked name is answered", dest.host)
+			return nil, netip.AddrPort{}, repHostUnreachable
+		}
 	} else {
+		if dest.addr.Unmap().IsUnspecified() {
+			s.log.Debugf("SOCKS5 request for %s refused: 0.0.0.0 and :: are not destinations", dest)
+			return nil, netip.AddrPort{}, repHostUnreachable
+		}
 		candidates = []netip.Addr{dest.addr}
 	}
 

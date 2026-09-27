@@ -14,9 +14,9 @@ const basePipeSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
 
 // PipeSecurityDescriptor returns the SDDL for the AWGSocks management pipe.
 //
-// The base descriptor covers the normal case, where AWGSocks runs as
-// LocalSystem. The account that actually owns the process is added as well, so
-// that `awgsocks run` in the foreground works for the user who started it.
+// The base descriptor covers LocalSystem and Administrators. The account that
+// actually owns the process is added as well: NT SERVICE\AWGSocks for the
+// service, or the user who started `awgsocks run` in the foreground.
 // Without this the pipe server can create its first instance but cannot open
 // the next one, because a named pipe listener must reopen the pipe by name.
 //

@@ -13,109 +13,35 @@ import (
 	"github.com/ComoEstaisAmigos/awgsocks/internal/ipc"
 )
 
-// TestDoubleClickHelpListsOnlyScriptsThatExist covers the case that made this
-// conditional worth writing: the executable is published on its own, or copied
-// out of its folder, and the helper scripts are not beside it. Naming files that
-// are not there would send someone looking for something that does not exist.
-func TestDoubleClickHelpListsOnlyScriptsThatExist(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"service-install.bat", "service-status.bat"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("@echo off\n"), 0o644); err != nil {
-			t.Fatalf("could not create %s: %v", name, err)
-		}
-	}
-
+func TestDoubleClickHelpNamesNoScripts(t *testing.T) {
 	var buf bytes.Buffer
-	doubleClickHelp(&buf, dir)
+	doubleClickHelp(&buf)
 	out := buf.String()
 
-	for _, want := range []string{"service-install.bat", "service-status.bat"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("%s exists but was not listed:\n%s", want, out)
-		}
+	want := "awgsocks.exe: This is a command line program, so double clicking it does nothing on its own.\n\n" +
+		"To drive it by hand, open an Administrator prompt in this folder\nand run:\n\n  .\\awgsocks.exe --help\n\n"
+	if out != want {
+		t.Errorf("unexpected double click message:\n%s", out)
 	}
-	for _, absent := range []string{"service-start.bat", "service-stop.bat", "service-uninstall.bat"} {
-		if strings.Contains(out, absent) {
-			t.Errorf("%s does not exist but was listed:\n%s", absent, out)
-		}
-	}
-	assertHelpIsRunnable(t, out)
-}
-
-// TestDoubleClickHelpWithoutScripts checks the executable on its own still says
-// something useful rather than pointing at an empty list.
-func TestDoubleClickHelpWithoutScripts(t *testing.T) {
-	var buf bytes.Buffer
-	doubleClickHelp(&buf, t.TempDir())
-	out := buf.String()
-
 	if strings.Contains(out, ".bat") {
-		t.Errorf("a script was named although none exist:\n%s", out)
-	}
-	if strings.Contains(out, "sitting next to this file") {
-		t.Errorf("the message still points at scripts that are not there:\n%s", out)
-	}
-	if !strings.Contains(out, "double clicking it does nothing on its own") {
-		t.Errorf("the explanation went missing:\n%s", out)
+		t.Errorf("the message names a script, which may be missing or differ from what is beside it:\n%s", out)
 	}
 	assertHelpIsRunnable(t, out)
-}
-
-// TestDoubleClickHelpKeepsScriptOrder checks the scripts are listed in the order
-// someone needs them, install first, rather than in directory order.
-func TestDoubleClickHelpKeepsScriptOrder(t *testing.T) {
-	dir := t.TempDir()
-	for _, s := range helperScripts {
-		if err := os.WriteFile(filepath.Join(dir, s.name), []byte("@echo off\n"), 0o644); err != nil {
-			t.Fatalf("could not create %s: %v", s.name, err)
-		}
-	}
-
-	var buf bytes.Buffer
-	doubleClickHelp(&buf, dir)
-	out := buf.String()
-
-	prev := -1
-	for _, s := range helperScripts {
-		at := strings.Index(out, s.name)
-		if at < 0 {
-			t.Fatalf("%s was not listed:\n%s", s.name, out)
-		}
-		if at < prev {
-			t.Fatalf("%s appears out of order:\n%s", s.name, out)
-		}
-		prev = at
-	}
-}
-
-// TestHelperScriptsInHandlesMissingDirectory guards the path where the
-// executable's location cannot be determined, which must degrade quietly rather
-// than panic on a double click.
-func TestHelperScriptsInHandlesMissingDirectory(t *testing.T) {
-	if got := helperScriptsIn(""); got != nil {
-		t.Errorf("an empty directory should list nothing, got %v", got)
-	}
-	if got := helperScriptsIn(filepath.Join(t.TempDir(), "nope")); len(got) != 0 {
-		t.Errorf("a missing directory should list nothing, got %v", got)
-	}
 }
 
 // TestReleasePackageShipsEveryHelperScript keeps three lists of the same six
-// files from drifting apart: the scripts the double click message can name,
+// files from drifting apart: the scripts install copies to Program Files,
 // the scripts in windows\, and the scripts scripts\package.ps1 puts in the zip.
 //
 // Each way they can disagree ships something broken. A script added to
 // windows\ but not to the package never reaches anyone; one the package lists
-// but the message does not is never mentioned to the person who needs it; and
-// one the message names but the zip lacks sends them looking for a file that is
-// not there.
+// but install does not copy never reaches Program Files; and one install
+// copies but the zip lacks is silently missing from every installation it
+// makes.
 func TestReleasePackageShipsEveryHelperScript(t *testing.T) {
 	root := filepath.Join("..", "..")
 
-	var named []string
-	for _, s := range helperScripts {
-		named = append(named, s.name)
-	}
+	named := helperScripts
 
 	raw, err := os.ReadFile(filepath.Join(root, "scripts", "package.ps1"))
 	if err != nil {
@@ -130,7 +56,7 @@ func TestReleasePackageShipsEveryHelperScript(t *testing.T) {
 		packaged = append(packaged, string(m[1]))
 	}
 	if strings.Join(packaged, ",") != strings.Join(named, ",") {
-		t.Errorf("scripts/package.ps1 ships %v but the executable names %v, in that order", packaged, named)
+		t.Errorf("scripts/package.ps1 ships %v but install copies %v, in that order", packaged, named)
 	}
 
 	found, err := filepath.Glob(filepath.Join(root, "windows", "*.bat"))
@@ -145,7 +71,7 @@ func TestReleasePackageShipsEveryHelperScript(t *testing.T) {
 	sort.Strings(inTree)
 	sort.Strings(want)
 	if strings.Join(inTree, ",") != strings.Join(want, ",") {
-		t.Errorf("windows\\ holds %v but the executable names %v", inTree, want)
+		t.Errorf("windows\\ holds %v but install copies %v", inTree, want)
 	}
 }
 
@@ -173,6 +99,95 @@ func TestServiceScriptsReadThePauseFieldTheServiceSends(t *testing.T) {
 		}
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("%s does not read %s, the field the service sends for a paused tunnel", script, want)
+		}
+	}
+}
+
+func TestControlScriptsHandOverToTheInstalledCopy(t *testing.T) {
+	read := func(script string) string {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "windows", script))
+		if err != nil {
+			t.Fatalf("could not read %s: %v", script, err)
+		}
+		return string(raw)
+	}
+	for _, script := range []string{"service-start.bat", "service-stop.bat", "service-status.bat", "service-config.bat", "service-uninstall.bat"} {
+		body := read(script)
+		for _, want := range []string{`Services\AWGSocks" /v ImagePath`, "call :SERVICE_DIR", "AWGSOCKS_FORWARDED", ":FORWARD", `call "%SVCDIR%%~nx0"`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does not hand over to the installed copy: %q is missing", script, want)
+			}
+		}
+		if strings.Index(body, "goto :FORWARD") > strings.Index(body, "net session") {
+			t.Errorf("%s asks for elevation before handing over, so the installed copy would not be the one elevated", script)
+		}
+		if !strings.Contains(body, `if not exist "%AWGSOCKS%" if defined SVCDIR set "AWGSOCKS=%SVCDIR%awgsocks.exe"`) {
+			t.Errorf("%s does not fall back to the installed awgsocks.exe", script)
+		}
+		installed := "sc query AWGSocks"
+		if script == "service-config.bat" {
+			installed = `if not exist "%CONFIG%"`
+		}
+		if i := strings.Index(body, installed); i < 0 || i > strings.Index(body, "was not found next to this script") {
+			t.Errorf("%s reports a missing awgsocks.exe before checking whether the service is installed", script)
+		}
+		if strings.Contains(body, "%ProgramFiles%\\AWGSocks\\%~nx0") {
+			t.Errorf("%s finds the installed copy through an environment variable a user can set", script)
+		}
+	}
+	install := read("service-install.bat")
+	if i := strings.Index(install, "call :CONFIRM_REPLACE"); i < 0 || i > strings.Index(install, "call :PICK_CONF") || !strings.Contains(install, "Type y to continue") {
+		t.Error("service-install.bat does not ask before replacing an installed service, or asks only after the .conf was picked")
+	}
+	if !strings.Contains(install, "uninstall --keep-settings") {
+		t.Error("service-install.bat removes the installed service without keeping its settings")
+	}
+	if strings.Contains(install, "uninstall --keep-settings >nul") || !strings.Contains(install, "if defined REMOVE_FAILED goto :FAIL") {
+		t.Error("service-install.bat hides whether removing the installed service worked, so a failure surfaces as a confusing install error")
+	}
+	if strings.Contains(install, "--socks %SOCKS%") {
+		t.Error("service-install.bat overrides the kept socks5_listen on every install")
+	}
+	if strings.Contains(install, ":FORWARD") {
+		t.Error("service-install.bat hands over to the installed copy, so it could never install a newer version")
+	}
+}
+
+func TestServiceScriptsStayConsistent(t *testing.T) {
+	for _, script := range helperScripts {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "windows", script))
+		if err != nil {
+			t.Fatalf("could not read %s: %v", script, err)
+		}
+		body := string(raw)
+		if strings.Contains(body, "\t") {
+			t.Errorf("%s indents with tabs", script)
+		}
+		if strings.Count(body, "10808") > strings.Count(body, `set "SOCKS=127.0.0.1:10808"`) {
+			t.Errorf("%s hardcodes the proxy port instead of reading socks5_listen from config.json", script)
+		}
+		if strings.Contains(body, "10808") && !strings.Contains(body, "call :READ_SOCKS") {
+			t.Errorf("%s defines a default proxy address but never reads the configured one", script)
+		}
+		if !strings.Contains(body, "Start-Process -FilePath $env:SELF -Verb RunAs") {
+			t.Errorf("%s does not elevate through $env:SELF, so a path holding an apostrophe breaks elevation", script)
+		}
+		if strings.Contains(body, " docs/") {
+			t.Errorf("%s points at a repository path the release zip does not contain", script)
+		}
+		for i, line := range strings.Split(body, "\n") {
+			l := strings.ToLower(strings.TrimSpace(line))
+			if l == "rem" || strings.HasPrefix(l, "rem ") || strings.HasPrefix(l, "::") {
+				t.Errorf("%s:%d is a comment line; the scripts carry none", script, i+1)
+			}
+		}
+		for _, phrase := range []string{"so there is nothing to start", "so there is nothing to stop", "left no data behind", "settings file does not exist"} {
+			if strings.Contains(body, phrase) {
+				t.Errorf("%s says %q instead of the one not installed message", script, phrase)
+			}
+		}
+		if script != "service-install.bat" && !strings.Contains(body, "echo The AWGSocks service is not installed.\r\n    goto :END") {
+			t.Errorf("%s does not say the service is not installed the way the other scripts do", script)
 		}
 	}
 }

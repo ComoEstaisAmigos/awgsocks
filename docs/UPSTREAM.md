@@ -91,7 +91,7 @@ cases upstream could not accept anyway.
 | Overlapping `H1-H4` ranges are rejected | Upstream `mergeWithDevice` rejects them too, but without a line number |
 | `Jmin > Jmax` is rejected | Upstream underflows a uint32 and asks for an enormous allocation |
 | `S1-S4 < 12` with `HeaderProtectionKey` is rejected | Upstream applies the same rule |
-| `PreUp`, `PostUp`, `PreDown`, `PostDown` are rejected | Running commands under LocalSystem would be a privilege escalation path |
+| `PreUp`, `PostUp`, `PreDown`, `PostDown` are rejected | Running commands from a file the service loads would be a privilege escalation path |
 | `Table` accepts only `off` | A configuration asking for system wide routing must not be ignored silently |
 | A non-loopback `socks5_listen` is rejected | An unauthenticated proxy must not be exposed to the network |
 

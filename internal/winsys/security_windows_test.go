@@ -76,7 +76,7 @@ func aclEntries(t *testing.T, path string) (entries []aclEntry, protected bool) 
 }
 
 // TestProtectGrantsExactlyTwoPrincipals is a security invariant, not a unit
-// test of convenience: the whole reason a LocalSystem service is launched from
+// test of convenience: the whole reason the private key is kept in
 // C:\ProgramData\AWGSocks is that nobody but SYSTEM and Administrators can
 // write there. An extra allow ACE for a standard user turns that directory
 // back into a privilege escalation path, because Full control on a directory
@@ -134,8 +134,117 @@ func TestProtectAppliesToFilesToo(t *testing.T) {
 // TestDescribePermissionsMatchesWhatIsApplied keeps the string AWGSocks prints
 // and documents from drifting away from the DACL it actually sets.
 func TestDescribePermissionsMatchesWhatIsApplied(t *testing.T) {
-	if got := DescribePermissions(); !strings.Contains(got, secureSDDL) {
-		t.Errorf("the documented permissions do not quote the DACL in force:\n got: %s\nwant it to contain: %s", got, secureSDDL)
+	got := DescribePermissions()
+	for _, want := range []string{"SYSTEM and Administrators", "read for the service account", "logs: modify", "writable by Administrators only"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the printed permissions do not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+const fileDeleteChild = 0x40
+
+func principalMasks(t *testing.T, path string) map[string]uint32 {
+	t.Helper()
+	entries, protected := aclEntries(t, path)
+	if !protected {
+		t.Errorf("the DACL of %s is not protected, so it could inherit a wider ACL", path)
+	}
+	masks := map[string]uint32{}
+	for _, e := range entries {
+		masks[e.sid] |= e.mask
+	}
+	return masks
+}
+
+func expectPrincipals(t *testing.T, what string, masks map[string]uint32, want ...string) {
+	t.Helper()
+	if len(masks) != len(want) {
+		t.Errorf("%s names %d principals, expected %d: %v", what, len(masks), len(want), masks)
+	}
+	for _, sid := range want {
+		if _, ok := masks[sid]; !ok {
+			t.Errorf("%s does not name %s", what, sid)
+		}
+	}
+}
+
+func TestServiceAccountCanOnlyReadItsData(t *testing.T) {
+	svc := ServiceSID("AWGSocks")
+	system, admins := wellKnownSIDs(t)
+	dir := filepath.Join(t.TempDir(), "AWGSocks")
+	if err := EnsureDataDir(dir, svc); err != nil {
+		t.Fatalf("EnsureDataDir failed: %v", err)
+	}
+	masks := principalMasks(t, dir)
+	expectPrincipals(t, "the data directory", masks, system, admins, svc)
+	if got := masks[svc] & (writeRights | fileDeleteChild); got != 0 {
+		t.Errorf("the service account can change the data directory (mask bits %#x)", got)
+	}
+
+	conf := filepath.Join(dir, "client.conf")
+	if err := os.WriteFile(conf, []byte("[Interface]\n"), 0o600); err != nil {
+		t.Fatalf("could not create the test file: %v", err)
+	}
+	if err := ProtectSecret(conf, svc); err != nil {
+		t.Fatalf("ProtectSecret failed: %v", err)
+	}
+	masks = principalMasks(t, conf)
+	expectPrincipals(t, "client.conf", masks, system, admins, svc)
+	if masks[svc]&windows.FILE_READ_DATA == 0 {
+		t.Error("the service account cannot read client.conf, so the tunnel could never start")
+	}
+	if got := masks[svc] & writeRights; got != 0 {
+		t.Errorf("the service account can change client.conf (mask bits %#x)", got)
+	}
+}
+
+func TestServiceAccountCanWriteOnlyItsLogs(t *testing.T) {
+	svc := ServiceSID("AWGSocks")
+	system, admins := wellKnownSIDs(t)
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := EnsureLogDir(dir, svc); err != nil {
+		t.Fatalf("EnsureLogDir failed: %v", err)
+	}
+	masks := principalMasks(t, dir)
+	expectPrincipals(t, "the log directory", masks, system, admins, svc)
+	if masks[svc]&windows.FILE_WRITE_DATA == 0 || masks[svc]&windows.DELETE == 0 {
+		t.Error("the service account cannot create and rotate its log files")
+	}
+	if got := masks[svc] & (windows.WRITE_DAC | windows.WRITE_OWNER); got != 0 {
+		t.Errorf("the service account can change who may read the logs (mask bits %#x)", got)
+	}
+}
+
+func TestProgramFilesAreRunnableButNotWritable(t *testing.T) {
+	svc := ServiceSID("AWGSocks")
+	system, admins := wellKnownSIDs(t)
+	users, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	if err != nil {
+		t.Fatalf("could not build the Users SID: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "AWGSocks")
+	if err := EnsureProgramDir(dir, svc); err != nil {
+		t.Fatalf("EnsureProgramDir failed: %v", err)
+	}
+	exe := filepath.Join(dir, "awgsocks.exe")
+	if err := os.WriteFile(exe, []byte("MZ"), 0o600); err != nil {
+		t.Fatalf("could not create the test file: %v", err)
+	}
+	if err := ProtectProgram(exe, svc); err != nil {
+		t.Fatalf("ProtectProgram failed: %v", err)
+	}
+	for _, path := range []string{dir, exe} {
+		masks := principalMasks(t, path)
+		expectPrincipals(t, path, masks, system, admins, users.String(), svc)
+		for _, who := range []string{users.String(), svc} {
+			if got := masks[who] & (writeRights | fileDeleteChild); got != 0 {
+				t.Errorf("%s can change %s (mask bits %#x), which would let it replace what the service runs", who, path, got)
+			}
+			if masks[who]&windows.FILE_EXECUTE == 0 || masks[who]&windows.FILE_READ_DATA == 0 {
+				t.Errorf("%s cannot read and run %s", who, path)
+			}
+		}
 	}
 }
 
@@ -154,7 +263,7 @@ const writeRights = windows.FILE_WRITE_DATA |
 // config.json readable without elevation.
 //
 // Reading it is harmless: it holds no key material. Writing it is not, because
-// it names the .conf the LocalSystem service loads, so a standard user able to
+// it names the .conf the service loads, so a standard user able to
 // rewrite it could redirect what that service brings up. The test therefore
 // checks the access mask rather than only the principal list: an ACE for Users
 // that quietly carried FILE_WRITE_DATA would pass a name-only check.
@@ -163,7 +272,8 @@ func TestProtectUserReadableLetsUsersReadButNotWrite(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("could not create the test file: %v", err)
 	}
-	if err := ProtectUserReadable(path); err != nil {
+	svc := ServiceSID("AWGSocks")
+	if err := ProtectUserReadable(path, svc); err != nil {
 		t.Fatalf("ProtectUserReadable failed: %v", err)
 	}
 
@@ -182,18 +292,21 @@ func TestProtectUserReadableLetsUsersReadButNotWrite(t *testing.T) {
 	for _, e := range entries {
 		allowed[e.sid] |= e.mask
 	}
-	for _, want := range []string{system, admins, users.String()} {
+	for _, want := range []string{system, admins, users.String(), svc} {
 		if _, ok := allowed[want]; !ok {
 			t.Errorf("%s is not named by the DACL", want)
 		}
 	}
-	if len(allowed) != 3 {
-		t.Fatalf("expected exactly SYSTEM, Administrators and Users, got %d principals: %v", len(allowed), entries)
+	if len(allowed) != 4 {
+		t.Fatalf("expected exactly SYSTEM, Administrators, Users and the service, got %d principals: %v", len(allowed), entries)
+	}
+	if got := allowed[svc] & writeRights; got != 0 {
+		t.Errorf("the service account can write config.json (mask bits %#x)", got)
 	}
 
 	if got := allowed[users.String()] & writeRights; got != 0 {
 		t.Errorf("Users hold write rights on config.json (mask bits %#x), which would let a standard user "+
-			"redirect the configuration a LocalSystem service loads", got)
+			"redirect the configuration the service loads", got)
 	}
 	if allowed[users.String()]&windows.FILE_READ_DATA == 0 {
 		t.Error("Users cannot read config.json, which is the whole point of this DACL")

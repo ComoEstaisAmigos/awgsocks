@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // Default locations and values for the application configuration.
@@ -62,16 +63,23 @@ type App struct {
 	path string
 }
 
-// RootDir returns the AWGSocks data directory, honouring the AWGSOCKS_ROOT
-// environment variable for tests and portable installs.
+// RootDir returns the AWGSocks data directory, taken from the machine's
+// ProgramData known folder and never from a variable a user can set.
 func RootDir() string {
-	if v := strings.TrimSpace(os.Getenv("AWGSOCKS_ROOT")); v != "" {
-		return v
+	if p := rootOverride.Load(); p != nil {
+		return *p
 	}
-	if pd := os.Getenv("ProgramData"); pd != "" {
+	if pd, err := programDataDir(); err == nil && pd != "" {
 		return filepath.Join(pd, "AWGSocks")
 	}
 	return DefaultRootDir
+}
+
+var rootOverride atomic.Pointer[string]
+
+func OverrideRootDir(dir string) (restore func()) {
+	prev := rootOverride.Swap(&dir)
+	return func() { rootOverride.Store(prev) }
 }
 
 // AppConfigPath returns the default config.json location.

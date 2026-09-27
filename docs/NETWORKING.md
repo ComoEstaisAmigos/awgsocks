@@ -12,6 +12,7 @@ Where names are resolved:
 | SOCKS5 CONNECT with ATYP=DOMAINNAME | the servers in `[Interface] DNS`, over the gVisor stack | Yes |
 | SOCKS5 UDP ASSOCIATE with ATYP=DOMAINNAME | same | Yes |
 | SOCKS5 CONNECT with an IP literal | no resolution | - |
+| Either of the first two, when `DNS` is a loopback address such as `127.0.0.1` | the resolver on this PC, for example dnscrypt-proxy | No, see [A resolver on this PC](#a-resolver-on-this-pc) |
 | `Endpoint` given as a hostname | the Windows resolver, before the tunnel exists | No, necessarily |
 | The rest of the operating system | the Windows resolver, unmodified | No |
 
@@ -19,8 +20,42 @@ With no `DNS` line in the configuration, hostname requests are refused with
 `0x04 host unreachable`. Falling back to the system resolver would be a DNS
 leak, so it does not happen.
 
+An answer of `0.0.0.0` or `::` is not a destination. Many blocklists answer a
+blocked name that way, so a name that resolves to nothing else is refused at
+once with `0x04 host unreachable` and counted under `names not resolved`,
+instead of waiting out a connection that cannot happen. A real address in the
+same answer is still used. A CONNECT or UDP datagram sent straight to
+`0.0.0.0` or `::` is refused the same way.
+
 Windows DNS settings are never modified, so programs that do not use the proxy
 keep using their normal resolver.
+
+### A resolver on this PC
+
+A loopback address in `DNS`, such as `127.0.0.1` or `::1`, cannot name a server
+inside the tunnel, so AWGSocks reads it as a resolver running on this PC:
+dnscrypt-proxy, or any other filtering DNS proxy. Hostname lookups for SOCKS5
+requests are sent to it on port 53 over loopback, which keeps its blocklists in
+effect for the programs that use the proxy.
+
+What that changes:
+
+- The lookup happens outside the tunnel. Whatever the local resolver forwards
+  upstream leaves over the normal connection, so its upstream server sees your
+  real address. dnscrypt-proxy encrypts that traffic; a plain forwarder does not.
+- Connections do not change: the address that comes back is still reached only
+  through the tunnel.
+- Once a loopback server is listed, every other `DNS` entry is ignored, so a
+  stopped local resolver makes lookups fail instead of quietly bypassing its
+  filtering.
+- The Windows hosts file is honoured on this path.
+- A name the local resolver blocks fails with `host unreachable`, and `status`
+  counts it under `names not resolved` in `Failed requests`, apart from
+  connections that could not be made.
+
+`awgsocks check` and `awgsocks status` mark the server with
+`(this PC, outside the tunnel)`, and a warning says the same when the
+configuration is loaded.
 
 ### DNS cache
 
@@ -43,7 +78,11 @@ Three layers deal with it:
 | Concurrency limit | At most 8 in-flight tunnel queries, which flattens the burst |
 
 Each attempt also gets a growing budget of 2, 4 and 6 seconds, so a datagram
-that is still lost costs about two seconds rather than five.
+that is still lost costs about two seconds rather than five. Only a timeout is
+tried again. An answer such as SERVFAIL, which a validating resolver gives for
+a name whose DNSSEC is broken, is final: asking again would only multiply the
+queries a public resolver sees from the VPN server's address, and enough of
+them makes it stop answering that address for a while.
 
 The `DNS cache` line in `awgsocks status` shows whether it is working.
 

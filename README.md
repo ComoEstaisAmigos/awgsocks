@@ -44,7 +44,10 @@ Every other program -------------> default Windows connection ------------------
 - Support IPv4 and IPv6 destinations.
 - Serve SOCKS5 `CONNECT` and `UDP ASSOCIATE` on `127.0.0.1:10808` with no
   authentication.
-- Resolve hostnames inside the tunnel, which is socks5h behaviour.
+- Resolve hostnames inside the tunnel, which is socks5h behaviour. A loopback
+  `DNS` such as `127.0.0.1` is used as a resolver on this PC instead, for
+  dnscrypt-proxy and similar filters; see
+  [A resolver on this PC](docs/NETWORKING.md#a-resolver-on-this-pc).
 - Run as a real Windows service with automatic reconnect, sleep and resume
   handling and recovery from network changes.
 
@@ -160,8 +163,12 @@ Get-FileHash -Algorithm SHA256 .\awgsocks-*-windows-amd64.zip
 ```
 
 Where you unpack it barely matters, because installing copies the executable
-into `C:\ProgramData\AWGSocks` and runs the service from that copy. The
-reason is under [Installing](docs/SERVICE.md#installing).
+and the scripts into `C:\Program Files\AWGSocks` and runs the service from
+there. Once installed, use the scripts in that folder and delete the one you
+unpacked. If you do run start, stop, status, config or uninstall from the
+unpacked folder, it hands over to the installed copy; install is the one
+script that runs from where it is, because that is how an update is applied.
+The reason is under [Installing](docs/SERVICE.md#installing).
 
 Building it yourself is the next section and needs nothing but Go.
 
@@ -213,12 +220,12 @@ itself, so double clicking is enough.
 
 | Script | What it does |
 | ------ | ------------ |
-| `service-install.bat` | Validates your configuration, installs the service and starts it, then checks that the proxy really answers |
+| `service-install.bat` | Validates your configuration, installs the service and starts it, then checks that the proxy really answers. If the service is already installed it shows both versions and asks first, and keeps your settings |
 | `service-start.bat` | Starts an already installed service and waits for the proxy to answer |
 | `service-stop.bat` | Stops the tunnel and closes the proxy port, leaving the service installed |
 | `service-status.bat` | Shows the tunnel and proxy state, which applications are using the proxy, and whether any of them is also going out directly |
 | `service-config.bat` | Opens the settings file, then applies the change and reports what took effect |
-| `service-uninstall.bat` | Stops and removes the service and deletes `C:\ProgramData\AWGSocks`, after asking |
+| `service-uninstall.bat` | Stops and removes the service and deletes `C:\ProgramData\AWGSocks`, after asking. `C:\Program Files\AWGSocks` stays, so the service can be installed again from there |
 
 `service-install.bat` uses a single `.conf` file sitting next to it. If there
 is none, or more than one, it opens a file picker, starting in the official
@@ -234,7 +241,9 @@ To confirm it works, run the [quick leak check](#testing).
 > [!NOTE]
 > `service-uninstall.bat` deletes the copy of your configuration that the
 > service runs from, under `C:\ProgramData\AWGSocks`. The original `.conf`
-> file you installed from is never touched.
+> file you installed from is never touched, and neither is
+> `C:\Program Files\AWGSocks`: delete that folder by hand to remove the
+> program itself.
 
 [docs/SERVICE.md](docs/SERVICE.md) covers the same steps run by hand.
 
@@ -247,12 +256,12 @@ To confirm it works, run the [quick leak check](#testing).
 | UDP relay reachability | Loopback only, and a wrapper refuses to send a reply to any non-loopback address. |
 | Management interface | The `\\.\pipe\AWGSocks` named pipe only. There is no TCP management port. |
 | Pipe ACL | LocalSystem, Administrators, and the account the process runs as. Nobody else. |
-| File permissions | `C:\ProgramData\AWGSocks` and its contents use `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` with inheritance disabled. The one exception is `config.json`, which any local user may read and only SYSTEM and Administrators may write, because it holds no key material. |
-| Service binary | `C:\ProgramData\AWGSocks\awgsocks.exe` under the same ACL, so a LocalSystem service is never launched from a user writable directory. |
+| File permissions | `C:\ProgramData\AWGSocks` is closed to everyone but SYSTEM and Administrators, with inheritance disabled. The service account may read it and write only its `logs`. `config.json` is also readable by any local user, because it holds no key material. |
+| Service binary | `C:\Program Files\AWGSocks\awgsocks.exe`, with the scripts beside it. Any user may read and run them; only SYSTEM and Administrators may change them, so the service is never launched from a user writable directory. |
 | Key storage | `config.json` holds no keys. `client.conf` is the only place. |
 | Logging | Every line passes a redaction filter before it is written. Labelled key assignments, 64 character hex strings and 44 character base64 keys become `[REDACTED]`, at DEBUG level too. |
 | Command execution | Nothing from the configuration file is ever executed. |
-| Service account | LocalSystem. The tunnel itself needs no extra privilege. |
+| Service account | `NT SERVICE\AWGSocks`, a virtual account of its own, not LocalSystem. Its privileges are limited to `SeChangeNotifyPrivilege`, so it holds no `SeImpersonatePrivilege` to climb to SYSTEM with. |
 
 ## Testing
 

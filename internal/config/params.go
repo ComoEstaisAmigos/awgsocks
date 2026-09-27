@@ -104,7 +104,7 @@ var peerParams = map[string]supportedParam{
 }
 
 // scriptHookKeys are wg-quick keys that execute shell commands. AWGSocks runs
-// as a Windows service under LocalSystem; executing arbitrary commands from a
+// as a Windows service; executing arbitrary commands from a
 // configuration file would be a privilege-escalation vector, so these are
 // rejected rather than ignored.
 var scriptHookKeys = map[string]struct{}{

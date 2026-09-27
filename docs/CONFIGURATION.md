@@ -51,9 +51,14 @@ A fuller example with comments: [config/example.conf](../config/example.conf).
 > tunnel that looks connected while not using the protocol behaviour you asked
 > for.
 
-`PreUp`, `PostUp`, `PreDown` and `PostDown` are rejected. The service runs as
-LocalSystem, so executing commands from a configuration file would be a
-privilege escalation path.
+`DNS` names resolvers inside the tunnel. A loopback address there, such as
+`127.0.0.1` for dnscrypt-proxy, is a resolver on this PC instead, queried
+outside the tunnel; see
+[A resolver on this PC](NETWORKING.md#a-resolver-on-this-pc).
+
+`PreUp`, `PostUp`, `PreDown` and `PostDown` are rejected. The configuration is
+installed by an Administrator and read by a service, so executing commands from
+it would be a privilege escalation path.
 
 ## Application configuration
 
@@ -77,16 +82,16 @@ This file never contains key material.
 
 ### Reading and editing it
 
-`C:\ProgramData\AWGSocks` is closed to everyone but SYSTEM and Administrators,
-because the service binary sits in it and runs as LocalSystem: anyone able to
-replace a file there would get code execution as SYSTEM. Explorer therefore
-refuses to open the folder and offers to "grant permanent access".
+`C:\ProgramData\AWGSocks` is closed to everyone but SYSTEM, Administrators and
+the service account, because `client.conf` in it holds your private key.
+Explorer therefore refuses to open the folder and offers to "grant permanent
+access".
 
 > [!WARNING]
 > Do not accept that offer. It adds your account to the folder with Full
 > control, and Full control on a directory carries `FILE_DELETE_CHILD`, which
-> lets `awgsocks.exe` be deleted and replaced whatever its own permissions say.
-> The next service start would then run the replacement as SYSTEM.
+> lets any file there be deleted and replaced whatever its own permissions say,
+> `config.json` and `client.conf` included.
 >
 > If it was already accepted, undo it from an Administrator prompt:
 >
@@ -105,8 +110,8 @@ That works even though the folder will not open, because Windows grants bypass
 traverse checking by default: the file's own permissions decide.
 
 Writing it does need Administrator, and that is deliberate. `config` names the
-`.conf` a LocalSystem service loads, so being able to rewrite this file means
-being able to redirect what that service brings up.
+`.conf` the service loads, so being able to rewrite this file means being able
+to redirect what that service brings up.
 
 The short way to edit it is to double click `service-config.bat`. It asks for
 Administrator rights itself, opens the file, and when you close the editor it

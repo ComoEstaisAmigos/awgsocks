@@ -342,6 +342,52 @@ func TestNoDNSProducesWarningNotError(t *testing.T) {
 	}
 }
 
+func TestLoopbackDNSIsALocalResolver(t *testing.T) {
+	for _, line := range []string{"DNS = 127.0.0.1", "DNS = ::1", "DNS = 127.0.2.1"} {
+		tun := mustParse(t, strings.Replace(userConfig, "DNS = 1.1.1.1,1.0.0.1", line, 1))
+		if len(tun.LocalDNS) != 1 || len(tun.DNS) != 0 {
+			t.Fatalf("%s: expected one local and no in-tunnel DNS server, got local=%v tunnel=%v", line, tun.LocalDNS, tun.DNS)
+		}
+		var local, missing bool
+		for _, w := range tun.Warnings {
+			local = local || strings.Contains(w, "resolver on this PC")
+			missing = missing || strings.Contains(w, "DNS is not set")
+		}
+		if !local {
+			t.Fatalf("%s: no warning says lookups leave the tunnel: %v", line, tun.Warnings)
+		}
+		if missing {
+			t.Fatalf("%s: a local resolver was reported as a missing DNS line", line)
+		}
+	}
+}
+
+func TestLocalDNSDisplacesTunnelDNS(t *testing.T) {
+	tun := mustParse(t, strings.Replace(userConfig, "DNS = 1.1.1.1,1.0.0.1", "DNS = 1.1.1.1,127.0.0.1", 1))
+	if len(tun.LocalDNS) != 1 || tun.LocalDNS[0].String() != "127.0.0.1" {
+		t.Fatalf("expected 127.0.0.1 as the local DNS server, got %v", tun.LocalDNS)
+	}
+	if len(tun.DNS) != 0 {
+		t.Fatalf("an in-tunnel server was kept beside a local one, which would bypass it: %v", tun.DNS)
+	}
+	found := false
+	for _, w := range tun.Warnings {
+		if strings.Contains(w, "1.1.1.1") && strings.Contains(w, "ignored") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no warning names the ignored in-tunnel server: %v", tun.Warnings)
+	}
+}
+
+func TestTunnelDNSHasNoLocalResolver(t *testing.T) {
+	tun := mustParse(t, userConfig)
+	if len(tun.LocalDNS) != 0 {
+		t.Fatalf("public DNS servers were treated as local: %v", tun.LocalDNS)
+	}
+}
+
 func TestParseAWGBool(t *testing.T) {
 	for _, s := range []string{"on", "1", "true", "yes"} {
 		if v, err := ParseAWGBool(s); err != nil || !v {

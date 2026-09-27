@@ -14,12 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/ComoEstaisAmigos/awgsocks/internal/awg"
 	"github.com/ComoEstaisAmigos/awgsocks/internal/config"
 	"github.com/ComoEstaisAmigos/awgsocks/internal/logging"
 	"github.com/ComoEstaisAmigos/awgsocks/internal/socks5"
+	"github.com/ComoEstaisAmigos/awgsocks/internal/winsys"
 )
 
 const (
@@ -69,7 +71,7 @@ func freeLoopbackPort(t *testing.T) int {
 func writeTestEnvironment(t *testing.T) (appPath, socksAddr string) {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("AWGSOCKS_ROOT", root)
+	t.Cleanup(config.OverrideRootDir(root))
 
 	confPath := filepath.Join(root, "client.conf")
 	if err := os.WriteFile(confPath, []byte(testTunnelConf), 0o600); err != nil {
@@ -467,12 +469,28 @@ func TestReloadWithNoChangesSaysSo(t *testing.T) {
 
 // recordingACLs captures the routing decision instead of touching real ACLs,
 // so the test can assert it on any machine, elevated or not.
-func recordingACLs(dirs, strict, readable *[]string) aclOps {
-	return aclOps{
-		ensureDir: func(p string) error { *dirs = append(*dirs, p); return nil },
-		protect:   func(p string) error { *strict = append(*strict, p); return nil },
-		readable:  func(p string) error { *readable = append(*readable, p); return nil },
+func recordingACLs(calls *[]string) aclOps {
+	record := func(kind string) func(string) error {
+		return func(p string) error { *calls = append(*calls, kind+" "+p); return nil }
 	}
+	return aclOps{
+		dataDir:    record("data"),
+		logDir:     record("logs"),
+		secret:     record("secret"),
+		readable:   record("readable"),
+		programDir: record("programdir"),
+		program:    record("program"),
+		protect:    record("strict"),
+	}
+}
+
+func fakeProgramFiles(t *testing.T) string {
+	t.Helper()
+	pf := t.TempDir()
+	prev := programFilesDir
+	programFilesDir = func() (string, error) { return pf, nil }
+	t.Cleanup(func() { programFilesDir = prev })
+	return filepath.Join(pf, "AWGSocks")
 }
 
 // TestRepairRoutesEachPathToTheRightACL is the test that matters for repair.
@@ -483,10 +501,17 @@ func recordingACLs(dirs, strict, readable *[]string) aclOps {
 // "grant permanent access" in the first place.
 func TestRepairRoutesEachPathToTheRightACL(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("AWGSOCKS_ROOT", root)
+	t.Cleanup(config.OverrideRootDir(root))
+	progDir := fakeProgramFiles(t)
 
 	confPath := filepath.Join(root, "client.conf")
-	for _, f := range []string{confPath, filepath.Join(root, "awgsocks.exe")} {
+	legacy := filepath.Join(root, "awgsocks.exe")
+	if err := os.MkdirAll(progDir, 0o755); err != nil {
+		t.Fatalf("could not create the program directory: %v", err)
+	}
+	programExe := filepath.Join(progDir, "awgsocks.exe")
+	programScript := filepath.Join(progDir, "service-status.bat")
+	for _, f := range []string{confPath, legacy, programExe, programScript} {
 		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 			t.Fatalf("could not create %s: %v", f, err)
 		}
@@ -503,27 +528,28 @@ func TestRepairRoutesEachPathToTheRightACL(t *testing.T) {
 		t.Fatalf("could not write config.json: %v", err)
 	}
 
-	var dirs, strict, readable []string
+	var calls []string
 	var out bytes.Buffer
-	if err := repairPermissions(&out, recordingACLs(&dirs, &strict, &readable)); err != nil {
+	if err := repairPermissions(&out, recordingACLs(&calls)); err != nil {
 		t.Fatalf("repair failed: %v", err)
 	}
 
-	wantDirs := []string{root, config.LogDir()}
-	if !reflect.DeepEqual(dirs, wantDirs) {
-		t.Errorf("directories closed:\n got: %v\nwant: %v", dirs, wantDirs)
+	want := []string{
+		"data " + root,
+		"logs " + config.LogDir(),
+		"secret " + confPath,
+		"strict " + legacy,
+		"readable " + config.AppConfigPath(),
+		"programdir " + progDir,
+		"program " + programExe,
+		"program " + programScript,
 	}
-	wantStrict := []string{confPath, filepath.Join(root, "awgsocks.exe")}
-	if !reflect.DeepEqual(strict, wantStrict) {
-		t.Errorf("files locked to SYSTEM and Administrators:\n got: %v\nwant: %v", strict, wantStrict)
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("ACL routing:\n got: %v\nwant: %v", calls, want)
 	}
-	wantReadable := []string{config.AppConfigPath()}
-	if !reflect.DeepEqual(readable, wantReadable) {
-		t.Errorf("files made user readable:\n got: %v\nwant: %v", readable, wantReadable)
-	}
-	for _, p := range readable {
-		if strings.EqualFold(p, confPath) {
-			t.Fatal("client.conf was made readable, which would publish the private key")
+	for _, c := range calls {
+		if strings.HasSuffix(c, confPath) && !strings.HasPrefix(c, "secret ") {
+			t.Fatalf("client.conf got %q, which would publish the private key", c)
 		}
 	}
 }
@@ -531,11 +557,12 @@ func TestRepairRoutesEachPathToTheRightACL(t *testing.T) {
 // TestRepairRefusesWhenNothingIsInstalled keeps repair from reporting success
 // on a machine where there is nothing to repair.
 func TestRepairRefusesWhenNothingIsInstalled(t *testing.T) {
-	t.Setenv("AWGSOCKS_ROOT", filepath.Join(t.TempDir(), "absent"))
+	t.Cleanup(config.OverrideRootDir(filepath.Join(t.TempDir(), "absent")))
+	fakeProgramFiles(t)
 
-	var dirs, strict, readable []string
+	var calls []string
 	var out bytes.Buffer
-	err := repairPermissions(&out, recordingACLs(&dirs, &strict, &readable))
+	err := repairPermissions(&out, recordingACLs(&calls))
 	if err == nil {
 		t.Fatal("repair claimed success with no data directory")
 	}
@@ -549,7 +576,8 @@ func TestRepairRefusesWhenNothingIsInstalled(t *testing.T) {
 // rather than stopping at the first missing path.
 func TestRepairSkipsAnInPlaceConfigurationThatIsGone(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("AWGSOCKS_ROOT", root)
+	t.Cleanup(config.OverrideRootDir(root))
+	fakeProgramFiles(t)
 
 	app := config.DefaultApp()
 	app.ConfigPath = filepath.Join(t.TempDir(), "moved-away.conf")
@@ -560,16 +588,143 @@ func TestRepairSkipsAnInPlaceConfigurationThatIsGone(t *testing.T) {
 		t.Fatalf("could not write config.json: %v", err)
 	}
 
-	var dirs, strict, readable []string
+	var calls []string
 	var out bytes.Buffer
-	if err := repairPermissions(&out, recordingACLs(&dirs, &strict, &readable)); err != nil {
+	if err := repairPermissions(&out, recordingACLs(&calls)); err != nil {
 		t.Fatalf("repair stopped at a missing configuration: %v", err)
 	}
-	if len(strict) != 0 {
-		t.Errorf("a path that does not exist was secured: %v", strict)
+	want := []string{"data " + root, "readable " + config.AppConfigPath()}
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("ACL routing:\n got: %v\nwant: %v", calls, want)
 	}
-	if len(readable) != 1 {
-		t.Errorf("config.json was not secured: %v", readable)
+}
+
+func TestReinstallKeepsTheSettings(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(config.OverrideRootDir(root))
+	appPath := config.AppConfigPath()
+
+	app, kept, err := installApp(appPath, filepath.Join(root, "client.conf"), InstallOptions{AutoStartTunnel: true})
+	if err != nil || kept {
+		t.Fatalf("a first install should start from the defaults: kept=%v err=%v", kept, err)
+	}
+	app.LogLevel = "debug"
+	app.MaxConnections = 50
+	app.AutoStart = false
+	if err := app.Save(appPath); err != nil {
+		t.Fatalf("could not write config.json: %v", err)
+	}
+
+	next := filepath.Join(t.TempDir(), "other.conf")
+	app, kept, err = installApp(appPath, next, InstallOptions{AutoStartTunnel: true})
+	if err != nil || !kept {
+		t.Fatalf("the existing settings were not kept: kept=%v err=%v", kept, err)
+	}
+	if app.LogLevel != "debug" || app.MaxConnections != 50 || app.AutoStart {
+		t.Errorf("a reinstall changed the settings: log_level=%s max_connections=%d auto_start=%v",
+			app.LogLevel, app.MaxConnections, app.AutoStart)
+	}
+	if app.ConfigPath != next {
+		t.Errorf("the reinstall did not point config.json at the new .conf: %s", app.ConfigPath)
+	}
+
+	app, _, err = installApp(appPath, next, InstallOptions{LogLevel: "warn", Socks5Listen: "127.0.0.1:1080"})
+	if err != nil {
+		t.Fatalf("installApp failed: %v", err)
+	}
+	if app.LogLevel != "warn" || app.Socks5Listen != "127.0.0.1:1080" || app.AutoStart {
+		t.Errorf("explicit install options were not applied: %+v", app)
+	}
+
+	if err := os.WriteFile(appPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("could not write a broken config.json: %v", err)
+	}
+	app, kept, err = installApp(appPath, next, InstallOptions{AutoStartTunnel: true})
+	if err != nil || kept || app.LogLevel != config.DefaultLogLevel {
+		t.Errorf("a broken config.json should fall back to the defaults: kept=%v err=%v level=%s", kept, err, app.LogLevel)
+	}
+}
+
+func TestUninstallKeepsSettingsOnlyWhenAsked(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(config.OverrideRootDir(root))
+	create := func() {
+		if err := os.MkdirAll(config.LogDir(), 0o755); err != nil {
+			t.Fatalf("could not create the log directory: %v", err)
+		}
+		if err := os.WriteFile(config.AppConfigPath(), []byte("{}"), 0o600); err != nil {
+			t.Fatalf("could not write config.json: %v", err)
+		}
+	}
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+
+	create()
+	var out bytes.Buffer
+	removeInstalledData(&out, true)
+	if !exists(config.AppConfigPath()) || !exists(config.LogDir()) {
+		t.Fatalf("--keep-settings deleted the settings or the logs:\n%s", out.String())
+	}
+	removeInstalledData(&out, false)
+	if exists(config.AppConfigPath()) || exists(config.LogDir()) {
+		t.Fatalf("a normal uninstall left the settings or the logs behind:\n%s", out.String())
+	}
+	if err := Uninstall(true, true); err == nil {
+		t.Error("--purge and --keep-settings were accepted together")
+	}
+}
+
+func TestServiceRunsAsItsOwnAccountWithoutImpersonation(t *testing.T) {
+	cfg := serviceConfig()
+	if cfg.ServiceStartName != `NT SERVICE\AWGSocks` {
+		t.Errorf("the service must run as its virtual account, got %q", cfg.ServiceStartName)
+	}
+	if cfg.Password != "" {
+		t.Error("a virtual account takes no password")
+	}
+	if cfg.SidType != windows.SERVICE_SID_TYPE_UNRESTRICTED {
+		t.Errorf("the service SID type must be unrestricted, got %d", cfg.SidType)
+	}
+	for _, p := range requiredPrivileges {
+		if p == "SeImpersonatePrivilege" || p == "SeAssignPrimaryTokenPrivilege" || p == "SeDebugPrivilege" {
+			t.Errorf("%s leads straight to SYSTEM and must not be kept", p)
+		}
+	}
+	got := multiSZ([]string{"SeA", "SeB"})
+	want := []uint16{'S', 'e', 'A', 0, 'S', 'e', 'B', 0, 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the privilege list is not a double-terminated multi-string: %v", got)
+	}
+}
+
+func TestInstallProgramCopiesTheBinaryAndScripts(t *testing.T) {
+	if !winsys.IsElevated() {
+		t.Skip("setting ACLs on the copies needs an elevated test run")
+	}
+	src := t.TempDir()
+	exe := filepath.Join(src, "awgsocks.exe")
+	for _, f := range []string{exe, filepath.Join(src, "service-status.bat")} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatalf("could not create %s: %v", f, err)
+		}
+	}
+	dir := filepath.Join(t.TempDir(), "AWGSocks")
+	got, err := installProgram(exe, dir, []string{"service-status.bat", "service-missing.bat"}, winsys.ServiceSID("AWGSocks"))
+	if err != nil {
+		t.Fatalf("installProgram failed: %v", err)
+	}
+	if got != filepath.Join(dir, "awgsocks.exe") {
+		t.Errorf("unexpected service path %s", got)
+	}
+	for _, name := range []string{"awgsocks.exe", "service-status.bat"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was not copied: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "service-missing.bat")); err == nil {
+		t.Error("a script that does not exist was created")
+	}
+	if _, err := installProgram(got, dir, []string{"service-status.bat"}, winsys.ServiceSID("AWGSocks")); err != nil {
+		t.Fatalf("installing from the installed copy failed: %v", err)
 	}
 }
 

@@ -300,7 +300,8 @@ func (r *udpRelay) forward(dst udpDestination, payload []byte) {
 // resolver either.
 func (r *udpRelay) resolve(dst udpDestination) (netip.AddrPort, bool) {
 	if dst.host == "" {
-		return netip.AddrPortFrom(dst.addr.Unmap(), dst.port), true
+		addr := dst.addr.Unmap()
+		return netip.AddrPortFrom(addr, dst.port), !addr.IsUnspecified()
 	}
 	if !r.srv.dialer.HasDNS() {
 		r.srv.log.Warnf("UDP datagram to %s dropped: no in-tunnel DNS configured", dst.host)
@@ -309,11 +310,12 @@ func (r *udpRelay) resolve(dst udpDestination) (netip.AddrPort, bool) {
 	ctx, cancel := context.WithTimeout(r.ctx, resolveTimeout)
 	addrs, err := r.srv.dialer.LookupHost(ctx, dst.host)
 	cancel()
+	addrs = routable(addrs)
 	if err != nil || len(addrs) == 0 {
-		r.srv.log.Debugf("in-tunnel DNS lookup failed for UDP destination %s: %v", dst.host, err)
+		r.srv.log.Debugf("DNS lookup failed for UDP destination %s: %v", dst.host, err)
 		return netip.AddrPort{}, false
 	}
-	return netip.AddrPortFrom(addrs[0].Unmap(), dst.port), true
+	return netip.AddrPortFrom(addrs[0], dst.port), true
 }
 
 // tunnelConn returns the in-tunnel socket for the given family, opening it and

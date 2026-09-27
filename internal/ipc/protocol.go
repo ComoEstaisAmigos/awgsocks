@@ -52,6 +52,7 @@ type TunnelStatus struct {
 	Generation    string            `json:"generation,omitempty"`
 	Addresses     []string          `json:"addresses,omitempty"`
 	DNS           []string          `json:"dns,omitempty"`
+	LocalDNS      []string          `json:"local_dns,omitempty"`
 	MTU           int               `json:"mtu,omitempty"`
 	AllowedIPs    []string          `json:"allowed_ips,omitempty"`
 	DNSCache      DNSCacheStatus    `json:"dns_cache"`
@@ -73,14 +74,16 @@ type DNSCacheStatus struct {
 
 // SocksStatus describes the local SOCKS5 front end.
 type SocksStatus struct {
-	Listen    string `json:"listen"`
-	Listening bool   `json:"listening"`
-	Active    int64  `json:"active_connections"`
-	Total     int64  `json:"total_connections"`
-	Rejected  int64  `json:"rejected_connections"`
-	Failed    int64  `json:"failed_connections"`
-	BytesUp   uint64 `json:"bytes_client_to_remote"`
-	BytesDown uint64 `json:"bytes_remote_to_client"`
+	Listen     string `json:"listen"`
+	Listening  bool   `json:"listening"`
+	Active     int64  `json:"active_connections"`
+	Total      int64  `json:"total_connections"`
+	Rejected   int64  `json:"rejected_connections"`
+	Failed     int64  `json:"failed_connections"`
+	Hostnames  int64  `json:"hostname_requests"`
+	Unresolved int64  `json:"unresolved_requests"`
+	BytesUp    uint64 `json:"bytes_client_to_remote"`
+	BytesDown  uint64 `json:"bytes_remote_to_client"`
 
 	UDPEnabled       bool   `json:"udp_enabled"`
 	UDPAssociations  int64  `json:"udp_associations"`

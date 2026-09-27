@@ -854,6 +854,9 @@ func (m *Manager) Status() *ipc.Status {
 		for _, d := range tunCfg.DNS {
 			st.Tunnel.DNS = append(st.Tunnel.DNS, d.String())
 		}
+		for _, d := range tunCfg.LocalDNS {
+			st.Tunnel.LocalDNS = append(st.Tunnel.LocalDNS, d.String())
+		}
 		st.Warnings = tunCfg.Warnings
 	}
 
@@ -890,14 +893,16 @@ func (m *Manager) Status() *ipc.Status {
 	if socksSrv != nil {
 		s := socksSrv.Stats()
 		st.Socks5 = ipc.SocksStatus{
-			Listen:    s.Listen,
-			Listening: s.Listening,
-			Active:    s.Active,
-			Total:     s.Total,
-			Rejected:  s.Rejected,
-			Failed:    s.Failed,
-			BytesUp:   s.BytesToPeer,
-			BytesDown: s.BytesToUser,
+			Listen:     s.Listen,
+			Listening:  s.Listening,
+			Active:     s.Active,
+			Total:      s.Total,
+			Rejected:   s.Rejected,
+			Failed:     s.Failed,
+			Hostnames:  s.Hostname,
+			Unresolved: s.Unresolved,
+			BytesUp:    s.BytesToPeer,
+			BytesDown:  s.BytesToUser,
 
 			UDPEnabled:       s.UDPEnabled,
 			UDPAssociations:  s.UDPAssociations,

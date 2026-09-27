@@ -15,7 +15,7 @@
 // and caching answers removes the burst, which is the actual fix; shorter retry
 // timeouts only reduce the damage when a packet is still lost.
 //
-// The cache holds only what the in-tunnel DNS servers answered. It never
+// The cache holds only what the configured DNS servers answered. It never
 // consults the Windows resolver and never provides an answer that could send
 // traffic outside the tunnel.
 package dns

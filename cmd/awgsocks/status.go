@@ -35,7 +35,13 @@ func printStatus(st *ipc.Status) {
 	fmt.Printf("Active sessions   : %d\n", st.Socks5.Active)
 	fmt.Printf("Total sessions    : %d\n", st.Socks5.Total)
 	fmt.Printf("Rejected          : %d (non-loopback or over the limit)\n", st.Socks5.Rejected)
-	fmt.Printf("Failed requests   : %d\n", st.Socks5.Failed)
+	fmt.Printf("Failed requests   : %s\n", formatFailed(st.Socks5))
+	fmt.Printf("Hostname requests : %d\n", st.Socks5.Hostnames)
+	if st.Socks5.Total >= resolvesItselfAfter && st.Socks5.Hostnames == 0 {
+		fmt.Printf("                    no program sent a hostname: they resolve names themselves,\n")
+		fmt.Printf("                    outside the proxy and its DNS. Turn on remote DNS in them\n")
+		fmt.Printf("                    (Firefox: Proxy DNS when using SOCKS v5)\n")
+	}
 	fmt.Printf("Relayed           : %s sent / %s received\n",
 		humanBytes(st.Socks5.BytesUp), humanBytes(st.Socks5.BytesDown))
 	fmt.Printf("UDP ASSOCIATE     : %s\n", formatUDP(st.Socks5))
@@ -54,10 +60,14 @@ func printStatus(st *ipc.Status) {
 	fmt.Printf("Reconnects        : %d\n", st.Tunnel.Reconnects)
 	fmt.Printf("Last error        : %s\n", orDash(st.Tunnel.LastError))
 	fmt.Printf("Tunnel addresses  : %s\n", orDash(strings.Join(st.Tunnel.Addresses, ", ")))
-	fmt.Printf("In-tunnel DNS     : %s\n", orDash(strings.Join(st.Tunnel.DNS, ", ")))
+	if len(st.Tunnel.LocalDNS) > 0 {
+		fmt.Printf("Local DNS         : %s (this PC, outside the tunnel)\n", strings.Join(st.Tunnel.LocalDNS, ", "))
+	} else {
+		fmt.Printf("In-tunnel DNS     : %s\n", orDash(strings.Join(st.Tunnel.DNS, ", ")))
+	}
 	fmt.Printf("MTU               : %d\n", st.Tunnel.MTU)
 	fmt.Printf("AllowedIPs        : %s\n", orDash(strings.Join(st.Tunnel.AllowedIPs, ", ")))
-	fmt.Printf("DNS cache         : %s\n", formatDNSCache(st.Tunnel.DNSCache))
+	fmt.Printf("DNS cache         : %s\n", formatDNSCache(st.Tunnel.DNSCache, len(st.Tunnel.LocalDNS) > 0))
 	fmt.Printf("AWG generation    : %s\n", orDash(st.Tunnel.Generation))
 	if len(st.Tunnel.AWGParams) > 0 {
 		keys := make([]string, 0, len(st.Tunnel.AWGParams))
@@ -110,16 +120,30 @@ func formatUDP(s ipc.SocksStatus) string {
 	return out
 }
 
-// formatDNSCache renders the in-tunnel resolver counters with a hit ratio,
+// formatDNSCache renders the resolver counters with a hit ratio,
 // which is what tells you whether slow browsing is a name resolution problem.
-func formatDNSCache(c ipc.DNSCacheStatus) string {
+func formatDNSCache(c ipc.DNSCacheStatus, local bool) string {
 	total := c.Hits + c.Misses + c.Coalesced
 	if total == 0 {
 		return "no lookups yet"
 	}
+	where := "tunnel"
+	if local {
+		where = "local"
+	}
 	saved := c.Hits + c.Coalesced
-	return fmt.Sprintf("%d entries, %d hits, %d coalesced, %d tunnel queries (%.0f%% saved)",
-		c.Entries, c.Hits, c.Coalesced, c.Misses, float64(saved)*100/float64(total))
+	return fmt.Sprintf("%d entries, %d hits, %d coalesced, %d %s queries (%.0f%% saved)",
+		c.Entries, c.Hits, c.Coalesced, c.Misses, where, float64(saved)*100/float64(total))
+}
+
+const resolvesItselfAfter = 20
+
+func formatFailed(s ipc.SocksStatus) string {
+	if s.Failed == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d (%d names not resolved, %d could not connect)",
+		s.Failed, s.Unresolved, s.Failed-s.Unresolved)
 }
 
 func yesNo(b bool) string {

@@ -14,7 +14,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -43,7 +42,7 @@ func run(args []string) int {
 		// returns, so the usage text would flash past unread. Say what to do
 		// instead, and hold the window open long enough to read it.
 		if winsys.OwnsConsole() {
-			doubleClickHelp(os.Stdout, exeDir())
+			doubleClickHelp(os.Stdout)
 			waitForEnter(os.Stdin)
 			return 0
 		}
@@ -95,13 +94,13 @@ func run(args []string) int {
 
 // helperScripts are the operator scripts shipped beside the executable, in the
 // order someone needs them.
-var helperScripts = []struct{ name, what string }{
-	{"service-install.bat", "install the service and start it"},
-	{"service-start.bat", "start a service that is already installed"},
-	{"service-stop.bat", "stop the tunnel and close the proxy port"},
-	{"service-status.bat", "show the tunnel, the proxy, and a leak check"},
-	{"service-config.bat", "change settings and apply them"},
-	{"service-uninstall.bat", "remove the service and its data"},
+var helperScripts = []string{
+	"service-install.bat",
+	"service-start.bat",
+	"service-stop.bat",
+	"service-status.bat",
+	"service-config.bat",
+	"service-uninstall.bat",
 }
 
 // selfInvocation is how to name this executable in a command someone is meant
@@ -115,49 +114,10 @@ var helperScripts = []struct{ name, what string }{
 const selfInvocation = `.\awgsocks.exe`
 
 // doubleClickHelp is what someone sees when they double click the executable in
-// Explorer. They are not looking for a command reference at that point, they
-// are looking for the thing to click instead.
-//
-// It lists only the scripts that are really there. The executable travels on its
-// own easily enough, copied out of its folder or pulled alone from a release,
-// and pointing at files that are not present would be worse than saying nothing.
-func doubleClickHelp(w io.Writer, dir string) {
-	fmt.Fprint(w, "awgsocks.exe: This is a command line program, so double clicking it does nothing on its own.\n\n")
-
-	if present := helperScriptsIn(dir); len(present) > 0 {
-		fmt.Fprint(w, "For everyday use, run one of the scripts sitting next to this file:\n\n")
-		for _, s := range present {
-			fmt.Fprintf(w, "  %-23s %s\n", s.name, s.what)
-		}
-		fmt.Fprint(w, "\nTo drive it by hand instead, open an Administrator prompt in this folder\nand run:\n\n  "+selfInvocation+" --help\n\n")
-		return
-	}
-
-	fmt.Fprint(w, "Open an Administrator prompt in this folder and run:\n\n  "+selfInvocation+" --help\n\n")
-}
-
-// helperScriptsIn returns the helper scripts that exist in dir.
-func helperScriptsIn(dir string) []struct{ name, what string } {
-	if dir == "" {
-		return nil
-	}
-	var present []struct{ name, what string }
-	for _, s := range helperScripts {
-		if _, err := os.Stat(filepath.Join(dir, s.name)); err == nil {
-			present = append(present, s)
-		}
-	}
-	return present
-}
-
-// exeDir is the folder the running executable sits in, or "" if that cannot be
-// determined.
-func exeDir() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	return filepath.Dir(exe)
+// Explorer. They are not looking for a command reference at that point.
+func doubleClickHelp(w io.Writer) {
+	fmt.Fprint(w, "awgsocks.exe: This is a command line program, so double clicking it does nothing on its own.\n\n"+
+		"To drive it by hand, open an Administrator prompt in this folder\nand run:\n\n  "+selfInvocation+" --help\n\n")
 }
 
 // waitForEnter holds open a console that would otherwise close the instant this
@@ -185,12 +145,13 @@ Commands:
   version                      Print the version and the pinned upstream identities
   check --config <file>        Validate a configuration (dry run, sends no packets)
   install --config <file>      Install the Windows service
-  uninstall [--purge]          Remove the Windows service
+  uninstall [--purge | --keep-settings]
+                               Remove the Windows service
   start | stop | restart       Control the service
   status [--json]              Show service, tunnel and SOCKS5 state
   reload                       Reload the configuration without dropping a healthy tunnel
   reconnect                    Force a fresh AmneziaWG handshake
-  repair                       Put the data directory permissions back as installed
+  repair                       Put the file permissions back as installed
   run [--config <file>]        Run in the foreground, for debugging
 
 install options:
@@ -207,9 +168,13 @@ Notes:
     never modified. This is not a system wide VPN.
   - install, uninstall, start, stop, restart, status, reload, reconnect and
     repair all require Administrator privileges.
+  - install keeps the settings in an existing config.json and only points it at
+    the new .conf, so uninstall --keep-settings followed by install is a reinstall.
+  - install copies awgsocks.exe and these scripts to C:\Program Files\AWGSocks,
+    and the service runs from there as NT SERVICE\AWGSocks, not LocalSystem.
   - Use repair if Explorer was allowed to "grant permanent access" to
     C:\ProgramData\AWGSocks. That hands the interactive user Full control of
-    the directory the LocalSystem service runs from, which repair undoes.
+    the directory holding your private key, which repair undoes.
 
 `, version.Version, config.DefaultSocksListen, config.DefaultLogLevel)
 }
@@ -410,14 +375,18 @@ func joinPrefixes(t *config.Tunnel) string {
 }
 
 func joinAddrs(t *config.Tunnel) string {
-	if len(t.DNS) == 0 {
+	addrs, suffix := t.DNS, ""
+	if len(t.LocalDNS) > 0 {
+		addrs, suffix = t.LocalDNS, " (this PC, outside the tunnel)"
+	}
+	if len(addrs) == 0 {
 		return "none"
 	}
 	var parts []string
-	for _, a := range t.DNS {
+	for _, a := range addrs {
 		parts = append(parts, a.String())
 	}
-	return strings.Join(parts, ", ")
+	return strings.Join(parts, ", ") + suffix
 }
 
 // ---------------------------------------------------------------------------
@@ -451,16 +420,18 @@ func cmdInstall(args []string) int {
 		LogLevel:        *logLevel,
 		AutoStartTunnel: !*noAuto,
 		StartService:    *start,
+		Scripts:         helperScripts,
 	}))
 }
 
 func cmdUninstall(args []string) int {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	purge := fs.Bool("purge", false, "delete the whole data directory, including the AmneziaWG configuration")
+	keep := fs.Bool("keep-settings", false, "keep config.json and the logs for the next install")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	return report(service.Uninstall(*purge))
+	return report(service.Uninstall(*purge, *keep))
 }
 
 // ---------------------------------------------------------------------------

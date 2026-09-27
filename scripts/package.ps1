@@ -38,8 +38,8 @@ $ErrorActionPreference = 'Stop'
 
 # The operator scripts shipped beside the executable. They are listed rather
 # than globbed, so a stray file in windows\ cannot slip into a release, and a
-# test in cmd/awgsocks keeps this list equal to the scripts the executable
-# names and to what windows\ holds.
+# test in cmd/awgsocks keeps this list equal to the scripts install copies to
+# Program Files and to what windows\ holds.
 $scripts = @(
     'service-install.bat',
     'service-start.bat',

@@ -3,9 +3,11 @@ package awg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -288,6 +290,40 @@ func TestStackEqual(t *testing.T) {
 	if stackEqual(a, b) {
 		t.Fatal("an MTU change must force the stack to be rebuilt")
 	}
+	c := loadUserConfig(t)
+	c.LocalDNS = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
+	if stackEqual(a, c) {
+		t.Fatal("a local DNS change must force a rebuild, which also flushes the DNS cache")
+	}
+}
+
+func TestLocalDNSCountsAsDNS(t *testing.T) {
+	text := strings.Replace(userConfig, "DNS = 1.1.1.1,1.0.0.1", "DNS = 127.0.0.1", 1)
+	cfg, err := config.ParseTunnel([]byte(text), filepath.Join(t.TempDir(), "client.conf"))
+	if err != nil {
+		t.Fatalf("could not parse the configuration: %v", err)
+	}
+	if !New(testLogger(t), cfg).HasDNS() {
+		t.Fatal("a local DNS server was not treated as DNS, so every hostname request would be refused")
+	}
+}
+
+func TestLookupNetworkFollowsTunnelFamilies(t *testing.T) {
+	cases := map[string]string{
+		"10.66.66.2/32,fd42:42:42::2/128": "ip",
+		"10.66.66.2/32":                   "ip4",
+		"fd42:42:42::2/128":               "ip6",
+	}
+	for addr, want := range cases {
+		text := strings.Replace(userConfig, "10.66.66.2/32,fd42:42:42::2/128", addr, 1)
+		cfg, err := config.ParseTunnel([]byte(text), filepath.Join(t.TempDir(), "client.conf"))
+		if err != nil {
+			t.Fatalf("could not parse the configuration: %v", err)
+		}
+		if got := lookupNetwork(cfg); got != want {
+			t.Errorf("Address = %s: expected %s, got %s", addr, want, got)
+		}
+	}
 }
 
 // allowedNetIdents mirrors the SOCKS5 guard: the tunnel package must not open
@@ -330,5 +366,37 @@ func TestTunnelPackageHasNoDirectDial(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+func TestOnlyTimeoutsAreAskedAgain(t *testing.T) {
+	servfail := &net.DNSError{Err: "server misbehaving", Name: "x.test", Server: "9.9.9.9", IsTemporary: true}
+	refused := &net.DNSError{Err: "server misbehaving", Name: "x.test", Server: "9.9.9.9"}
+	timeout := &net.DNSError{Err: "write udp 10.66.66.4:5353: i/o timeout", Name: "x.test", IsTimeout: true}
+	plainTimeout := &net.DNSError{Err: "i/o timeout", Name: "x.test"}
+	notFound := &net.DNSError{Err: "no such host", Name: "x.test", IsNotFound: true}
+
+	cases := []struct {
+		name         string
+		err          error
+		seen         bool
+		retry, found bool
+	}{
+		{"SERVFAIL is final", servfail, false, false, false},
+		{"REFUSED is final", refused, false, false, false},
+		{"a lost datagram is asked again", timeout, false, true, false},
+		{"a bare i/o timeout is asked again", plainTimeout, false, true, false},
+		{"a wrapped timeout is asked again", fmt.Errorf("in-tunnel DNS: %w", timeout), false, true, false},
+		{"a deadline is asked again", context.DeadlineExceeded, false, true, false},
+		{"a first not found is confirmed", notFound, false, true, true},
+		{"a second not found is believed", notFound, true, false, true},
+		{"a timeout keeps an earlier not found", timeout, true, true, true},
+		{"anything else is final", errors.New("cannot unmarshal DNS message"), false, false, false},
+	}
+	for _, c := range cases {
+		retry, found := retryDecision(c.err, c.seen)
+		if retry != c.retry || found != c.found {
+			t.Errorf("%s: got retry=%v notFound=%v, want retry=%v notFound=%v", c.name, retry, found, c.retry, c.found)
+		}
 	}
 }

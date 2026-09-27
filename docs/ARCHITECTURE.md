@@ -224,6 +224,11 @@ With no DNS configured the request is refused rather than handed to Windows,
 which is what keeps this fail-closed: see
 [DNS behaviour](NETWORKING.md#dns-behaviour).
 
+A loopback `DNS` server is the other exception. It can only be a resolver on
+this PC, such as dnscrypt-proxy, so `internal/localdns` sends the query there
+over loopback instead, and refuses any address that is not loopback; see
+[A resolver on this PC](NETWORKING.md#a-resolver-on-this-pc).
+
 > [!NOTE]
 > The one exception is an `Endpoint` given as a hostname. The server address has
 > to be known before the tunnel exists, so that single lookup uses the Windows
@@ -267,11 +272,11 @@ What the choice costs, in one view:
 | Operation | Privilege |
 | --- | --- |
 | `awgsocks version`, `check` | None |
-| `awgsocks run` (foreground) | None, but it needs a writable data directory |
+| `awgsocks run` (foreground) | None; without Administrator it logs to the console only, because the log directory is closed |
 | `awgsocks install`, `uninstall`, `repair` | Administrator |
 | `awgsocks start`, `stop`, `restart` | Administrator |
 | `awgsocks status`, `reload`, `reconnect` | Access to the management pipe (Administrator or the service account) |
-| The service itself | LocalSystem |
+| The service itself | `NT SERVICE\AWGSocks`, limited to `SeChangeNotifyPrivilege` |
 | Running the tunnel | No extra privilege, no raw socket and no driver |
 
 Unlike solutions built on Wintun, the tunnel itself needs no administrative

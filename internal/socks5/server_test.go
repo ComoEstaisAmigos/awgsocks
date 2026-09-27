@@ -243,6 +243,144 @@ func TestHostnameResolvedInsideTunnel(t *testing.T) {
 	}
 }
 
+func TestHostnameRequestsAreCounted(t *testing.T) {
+	echo := startEcho(t)
+	d := &fakeDialer{remote: echo, hasDNS: true, resolved: []netip.Addr{netip.MustParseAddr("203.0.113.7")}}
+	s := startServer(t, d)
+
+	ip := netip.MustParseAddr("10.1.2.3").As4()
+	c, rep := socksConnect(t, s.Addr(), atypIPv4, ip[:], 443)
+	c.Close()
+	if rep != repSuccess {
+		t.Fatalf("expected success for the IP request, got reply code %d", rep)
+	}
+	if got := s.Stats().Hostname; got != 0 {
+		t.Fatalf("an IP request was counted as a hostname request: %d", got)
+	}
+
+	host := []byte("example.com")
+	c, rep = socksConnect(t, s.Addr(), atypDomain, append([]byte{byte(len(host))}, host...), 443)
+	c.Close()
+	if rep != repSuccess {
+		t.Fatalf("expected success for the hostname request, got reply code %d", rep)
+	}
+	if got := s.Stats().Hostname; got != 1 {
+		t.Fatalf("expected one hostname request, got %d", got)
+	}
+}
+
+func TestUnresolvedNamesAreCountedApart(t *testing.T) {
+	d := &fakeDialer{remote: netip.MustParseAddrPort("127.0.0.1:1"), hasDNS: true, lookupErr: errors.New("no such host")}
+	s := startServer(t, d)
+
+	host := []byte("blocked.example")
+	c, rep := socksConnect(t, s.Addr(), atypDomain, append([]byte{byte(len(host))}, host...), 443)
+	c.Close()
+	if rep != repHostUnreachable {
+		t.Fatalf("expected host unreachable for a name that did not resolve, got %d", rep)
+	}
+	if st := s.Stats(); st.Failed != 1 || st.Unresolved != 1 {
+		t.Fatalf("a name that did not resolve was not counted as unresolved: failed=%d unresolved=%d", st.Failed, st.Unresolved)
+	}
+
+	d.dialErr = errors.New("connection refused")
+	ip := netip.MustParseAddr("10.1.2.3").As4()
+	c, _ = socksConnect(t, s.Addr(), atypIPv4, ip[:], 443)
+	c.Close()
+	if st := s.Stats(); st.Failed != 2 || st.Unresolved != 1 {
+		t.Fatalf("a failed connection was counted as an unresolved name: failed=%d unresolved=%d", st.Failed, st.Unresolved)
+	}
+
+	d.dialErr = nil
+	d.lookupErr = awg.ErrNotReady
+	c, _ = socksConnect(t, s.Addr(), atypDomain, append([]byte{byte(len(host))}, host...), 443)
+	c.Close()
+	if st := s.Stats(); st.Failed != 3 || st.Unresolved != 1 {
+		t.Fatalf("a tunnel without a handshake was blamed on the name: failed=%d unresolved=%d", st.Failed, st.Unresolved)
+	}
+}
+
+func TestNullAddressAnswerIsTreatedAsBlocked(t *testing.T) {
+	d := &fakeDialer{remote: netip.MustParseAddrPort("127.0.0.1:1"), hasDNS: true,
+		resolved: []netip.Addr{netip.MustParseAddr("0.0.0.0"), netip.MustParseAddr("::")}}
+	s := startServer(t, d)
+
+	host := []byte("c.nullip.test.example")
+	c, rep := socksConnect(t, s.Addr(), atypDomain, append([]byte{byte(len(host))}, host...), 443)
+	c.Close()
+	if rep != repHostUnreachable {
+		t.Fatalf("expected host unreachable for a name answered with 0.0.0.0 and ::, got %d", rep)
+	}
+	if d.lastDial.IsValid() {
+		t.Fatalf("the tunnel was asked to reach %s", d.lastDial)
+	}
+	if st := s.Stats(); st.Failed != 1 || st.Unresolved != 1 {
+		t.Fatalf("a null address answer was not counted as an unresolved name: failed=%d unresolved=%d", st.Failed, st.Unresolved)
+	}
+}
+
+func TestNullAddressIsSkippedBesideARealOne(t *testing.T) {
+	echo := startEcho(t)
+	real := netip.MustParseAddr("203.0.113.7")
+	d := &fakeDialer{remote: echo, hasDNS: true, resolved: []netip.Addr{netip.MustParseAddr("::"), real}}
+	s := startServer(t, d)
+
+	host := []byte("example.com")
+	c, rep := socksConnect(t, s.Addr(), atypDomain, append([]byte{byte(len(host))}, host...), 443)
+	defer c.Close()
+	if rep != repSuccess {
+		t.Fatalf("expected success, got reply code %d", rep)
+	}
+	if d.lastDial.Addr() != real {
+		t.Fatalf("expected %s to be dialled, got %s", real, d.lastDial)
+	}
+}
+
+func TestNullAddressLiteralIsRefused(t *testing.T) {
+	d := &fakeDialer{remote: netip.MustParseAddrPort("127.0.0.1:1")}
+	s := startServer(t, d)
+
+	v4 := netip.MustParseAddr("0.0.0.0").As4()
+	c, rep := socksConnect(t, s.Addr(), atypIPv4, v4[:], 443)
+	c.Close()
+	if rep != repHostUnreachable {
+		t.Fatalf("expected host unreachable for 0.0.0.0, got %d", rep)
+	}
+	v6 := netip.MustParseAddr("::").As16()
+	c, rep = socksConnect(t, s.Addr(), atypIPv6, v6[:], 443)
+	c.Close()
+	if rep != repHostUnreachable {
+		t.Fatalf("expected host unreachable for ::, got %d", rep)
+	}
+	if d.lastDial.IsValid() {
+		t.Fatalf("the tunnel was asked to reach %s", d.lastDial)
+	}
+	if st := s.Stats(); st.Failed != 2 || st.Unresolved != 0 {
+		t.Fatalf("expected two failed requests and no unresolved names: failed=%d unresolved=%d", st.Failed, st.Unresolved)
+	}
+}
+
+func TestUDPNullAddressIsDropped(t *testing.T) {
+	d := &fakeDialer{hasDNS: true}
+	r := &udpRelay{srv: New(testLogger(t), d, "127.0.0.1:0", 0), ctx: context.Background()}
+
+	if _, ok := r.resolve(udpDestination{addr: netip.MustParseAddr("0.0.0.0"), port: 53}); ok {
+		t.Fatal("a datagram to 0.0.0.0 was accepted")
+	}
+	if got, ok := r.resolve(udpDestination{addr: netip.MustParseAddr("192.0.2.1"), port: 53}); !ok || got.Addr().String() != "192.0.2.1" {
+		t.Fatalf("a datagram to a real address was not accepted: %v %v", got, ok)
+	}
+
+	d.resolved = []netip.Addr{netip.MustParseAddr("0.0.0.0"), netip.MustParseAddr("::")}
+	if _, ok := r.resolve(udpDestination{host: "blocked.example", port: 53}); ok {
+		t.Fatal("a name answered with 0.0.0.0 and :: was sent a datagram")
+	}
+	d.resolved = []netip.Addr{netip.MustParseAddr("::"), netip.MustParseAddr("203.0.113.7")}
+	if got, ok := r.resolve(udpDestination{host: "example.com", port: 53}); !ok || got.Addr().String() != "203.0.113.7" {
+		t.Fatalf("the real address beside :: was not used: %v %v", got, ok)
+	}
+}
+
 func TestHostnameRejectedWithoutTunnelDNS(t *testing.T) {
 	d := &fakeDialer{remote: netip.MustParseAddrPort("127.0.0.1:1"), hasDNS: false}
 	s := startServer(t, d)

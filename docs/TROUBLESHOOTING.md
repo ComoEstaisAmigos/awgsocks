@@ -57,6 +57,11 @@ resolution is the bottleneck.
 
 Try a different DNS server in the configuration. Some public resolvers rate
 limit queries coming from a VPN server's shared address, which causes the losses.
+If new names stop resolving altogether right after a page that asks for many
+broken names, such as a DNS test site, while sites already open keep working,
+the resolver has stopped answering the VPN server for a while. Wait a few
+minutes, or use another resolver or a resolver on this PC; see
+[A resolver on this PC](NETWORKING.md#a-resolver-on-this-pc).
 
 > [!NOTE]
 > A 1 to 2 MB file measures the TLS handshake, not throughput. See
@@ -69,6 +74,25 @@ The configuration probably has no `DNS` line. Check the `In-tunnel DNS` field in
 
 The other possibility is that the in-tunnel DNS server is not covered by
 `AllowedIPs`.
+
+If `status` shows `Local DNS` instead, the `DNS` line is a loopback address and
+lookups go to a resolver on this PC, such as dnscrypt-proxy. It has to be
+running and listening on port 53 of that address; check with
+`nslookup example.com 127.0.0.1`. See
+[A resolver on this PC](NETWORKING.md#a-resolver-on-this-pc).
+
+## Filtering or remote DNS has no effect
+
+`status` says `no program sent a hostname` under `Hostname requests`, or
+`DNS cache` stays at `no lookups yet` while you browse. The programs using the
+proxy are resolving names themselves and sending only IP addresses, so neither
+the `DNS` servers in the configuration nor a resolver on this PC such as
+dnscrypt-proxy ever sees their lookups.
+
+Turn on remote DNS in the program. In Firefox and Mullvad Browser that is
+**Proxy DNS when using SOCKS v5** in the connection settings. Mullvad Browser
+also enables its own DNS over HTTPS by default; with the setting above on, names
+go to the proxy instead. `Hostname requests` should start counting at once.
 
 ## The service will not start
 

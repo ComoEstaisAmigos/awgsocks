@@ -51,3 +51,44 @@ func TestStatusSaysWhyTheTunnelIsPaused(t *testing.T) {
 		t.Fatalf("a tunnel that is not paused is reported as paused:\n%s", out)
 	}
 }
+
+func TestStatusWarnsWhenProgramsResolveNamesThemselves(t *testing.T) {
+	const hint = "no program sent a hostname"
+
+	st := &ipc.Status{Service: "running"}
+	st.Socks5.Total = resolvesItselfAfter + 10
+	if out := captureStatus(t, st); !strings.Contains(out, hint) {
+		t.Fatalf("programs that only send IP addresses were not pointed out:\n%s", out)
+	}
+
+	st.Socks5.Hostnames = 1
+	if out := captureStatus(t, st); strings.Contains(out, hint) {
+		t.Fatalf("the hint was shown although a hostname arrived:\n%s", out)
+	}
+
+	st.Socks5.Hostnames = 0
+	st.Socks5.Total = resolvesItselfAfter - 1
+	if out := captureStatus(t, st); strings.Contains(out, hint) {
+		t.Fatalf("the hint was shown after too few sessions to judge:\n%s", out)
+	}
+}
+
+func TestDNSCacheNamesWhereQueriesGo(t *testing.T) {
+	c := ipc.DNSCacheStatus{Entries: 3, Hits: 2, Misses: 3}
+	if got := formatDNSCache(c, false); !strings.Contains(got, "3 tunnel queries") {
+		t.Fatalf("in-tunnel queries are mislabelled: %s", got)
+	}
+	if got := formatDNSCache(c, true); !strings.Contains(got, "3 local queries") {
+		t.Fatalf("queries to a resolver on this PC are labelled as tunnel queries: %s", got)
+	}
+}
+
+func TestFailedRequestsAreSplitByCause(t *testing.T) {
+	if got := formatFailed(ipc.SocksStatus{}); got != "0" {
+		t.Fatalf("no failures should read as 0, got %q", got)
+	}
+	got := formatFailed(ipc.SocksStatus{Failed: 26, Unresolved: 24})
+	if want := "26 (24 names not resolved, 2 could not connect)"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}

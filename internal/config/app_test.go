@@ -166,3 +166,33 @@ func utf16LE(s string) []byte {
 	}
 	return out
 }
+
+func TestRootDirIgnoresUserEnvironment(t *testing.T) {
+	want := RootDir()
+	t.Setenv("AWGSOCKS_ROOT", t.TempDir())
+	t.Setenv("ProgramData", t.TempDir())
+	if got := RootDir(); got != want {
+		t.Fatalf("the data directory followed an environment variable a user can set: %s instead of %s", got, want)
+	}
+	if !strings.HasSuffix(strings.ToLower(want), strings.ToLower(`\AWGSocks`)) {
+		t.Fatalf("unexpected data directory %s", want)
+	}
+}
+
+func TestOverrideRootDirIsRestored(t *testing.T) {
+	want := RootDir()
+	dir := t.TempDir()
+	restore := OverrideRootDir(dir)
+	if got := RootDir(); got != dir {
+		restore()
+		t.Fatalf("the override was not applied: %s", got)
+	}
+	if got := AppConfigPath(); got != filepath.Join(dir, DefaultAppFileName) {
+		restore()
+		t.Fatalf("config.json does not follow the override: %s", got)
+	}
+	restore()
+	if got := RootDir(); got != want {
+		t.Fatalf("the override was not restored: %s instead of %s", got, want)
+	}
+}
