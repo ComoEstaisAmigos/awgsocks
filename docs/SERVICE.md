@@ -184,7 +184,7 @@ AWG generation    : AmneziaWG 1.5 (Jc/Jmin/Jmax, S1-S4, H1-H4)
 Active AWG params : DISABLE_COOKIES=0 H1=301745575-401745574 H2=876826554-976826553 H3=1337755454-1437755454 H4=1776593183-1876593183 JC=10 JMAX=1000 JMIN=50 RANDOM_TRAILERS=0 S1=150 S2=135 S3=107 S4=43
 
 == Versions ==
-AWGSocks          : 1.0.0
+AWGSocks          : 1.1.0
 AmneziaWG         : v3.1.20260828 (commit b5928efb6ca1)
 AWG conf parser   : v3.1.20260814 (commit e90531d15802)
 Wintun            : not used (userspace gVisor netstack; no Windows adapter is created)

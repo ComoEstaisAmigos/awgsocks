@@ -5,7 +5,7 @@ import "fmt"
 
 // Version is the AWGSocks release version. It can be overridden at build time
 // with -ldflags "-X github.com/ComoEstaisAmigos/awgsocks/internal/version.Version=..."
-var Version = "1.0.0"
+var Version = "1.1.0"
 
 // Commit is the AWGSocks source revision, injected at build time when available.
 var Commit = "unknown"

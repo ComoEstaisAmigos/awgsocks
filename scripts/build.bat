@@ -12,7 +12,7 @@ set GOOS=windows
 set GOARCH=amd64
 set CGO_ENABLED=0
 
-set VERSION=1.0.0
+set VERSION=1.1.0
 set PKG=github.com/ComoEstaisAmigos/awgsocks/internal/version
 
 set COMMIT=unknown
