@@ -15,12 +15,12 @@ Every other program -------------> default Windows connection ------------------
 ## Contents
 
 - [What it does and does not do](#what-it-does-and-does-not-do)
+- [Usage](#usage)
 - [Architecture](#architecture)
 - [Requirements](#requirements)
 - [Pinned upstream versions](#pinned-upstream-versions)
 - [Download](#download)
 - [Building](#building)
-- [Quick start](#quick-start)
 - [Security model](#security-model)
 - [Testing](#testing)
 - [Known limitations](#known-limitations)
@@ -61,6 +61,76 @@ Every other program -------------> default Windows connection ------------------
 - Fall back to the default Internet connection when the tunnel is down. Requests fail instead.
 - Listen anywhere except loopback.
 - Support the SOCKS5 `BIND` command.
+
+## Usage
+
+### 1. Install
+
+Download the zip from the [releases page](../../releases/latest), check it as
+[Download](#download) shows, and unzip it. Put your AmneziaWG `.conf` beside
+`service-install.bat` and double click that. It asks for Administrator rights,
+installs the service to `C:\Program Files\AWGSocks`, starts it and checks that
+the proxy answers. With no `.conf` beside it, or more than one, it opens a file
+picker, starting in the official AmneziaVPN client's configuration folder when
+that client is installed.
+
+The service starts with Windows from then on. Use the scripts in
+`C:\Program Files\AWGSocks` afterwards and delete the folder you unzipped.
+
+### 2. Point programs at the proxy
+
+Every program needs the same settings: a **SOCKS5** proxy at `127.0.0.1`, port
+`10808`, no username or password, and **hostnames resolved through the proxy**.
+Miss the last one and the program looks names up itself, outside the tunnel.
+`127.0.0.1:10808` is the default; `service-config.bat` changes it.
+
+| Program | Setting |
+| --- | --- |
+| Firefox | Settings, search for `proxy` and open the connection settings. Choose **Manual proxy configuration**, set **SOCKS Host** to `127.0.0.1` and **Port** to `10808`, select **SOCKS v5** and tick **Proxy DNS when using SOCKS v5** |
+| Chrome, Edge, Brave | Start the browser with `--proxy-server="socks5://127.0.0.1:10808"`, for example by adding it to the shortcut's target. Close every window of it first: a browser that is already running ignores the flag |
+| qBittorrent | Tools > Options > Connection > Proxy Server. Type **SOCKS5**, host `127.0.0.1`, port `10808`, and tick **Perform hostname lookup via proxy**, **Use proxy for BitTorrent purposes**, **Use proxy for peer connections**, **Use proxy for RSS purposes** and **Use proxy for general purposes** |
+| curl | `curl.exe --proxy socks5h://127.0.0.1:10808 https://example.com` |
+| git, HTTPS remotes | `git config --global http.proxy socks5h://127.0.0.1:10808` |
+
+> [!WARNING]
+> In curl, git and anything else built on libcurl, write `socks5h://`.
+> Plain `socks5://` makes the program resolve the name itself and hand the
+> proxy only an IP address, so the lookup leaves outside the tunnel. Chromium
+> browsers are the other way round: their `socks5://` already resolves through
+> the proxy.
+
+### 3. Check it
+
+```bat
+curl.exe --proxy socks5h://127.0.0.1:10808 https://api.ipify.org
+```
+
+This prints the VPN server's address. `service-status.bat` shows the tunnel,
+which programs are using the proxy and whether any of them also connects
+directly; the full [leak check](#testing) is further down.
+
+### The scripts
+
+Six scripts sit next to `awgsocks.exe`. Each one asks for Administrator rights
+itself, so double clicking is enough.
+
+| Script | What it does |
+| ------ | ------------ |
+| `service-install.bat` | Validates your configuration, installs the service and starts it, then checks that the proxy really answers. If the service is already installed it shows both versions and asks first, and keeps your settings |
+| `service-start.bat` | Starts an already installed service and waits for the proxy to answer |
+| `service-stop.bat` | Stops the tunnel and closes the proxy port, leaving the service installed |
+| `service-status.bat` | Shows the tunnel and proxy state, which applications are using the proxy, and whether any of them is also going out directly |
+| `service-config.bat` | Opens the settings file, then applies the change and reports what took effect |
+| `service-uninstall.bat` | Stops and removes the service and deletes `C:\ProgramData\AWGSocks`, after asking. `C:\Program Files\AWGSocks` stays, so the service can be installed again from there |
+
+> [!NOTE]
+> `service-uninstall.bat` deletes the copy of your configuration that the
+> service runs from, under `C:\ProgramData\AWGSocks`. The original `.conf`
+> file you installed from is never touched, and neither is
+> `C:\Program Files\AWGSocks`: delete that folder by hand to remove the
+> program itself.
+
+[docs/SERVICE.md](docs/SERVICE.md) covers the same steps run by hand.
 
 ## Architecture
 
@@ -154,7 +224,7 @@ Why these versions, and what to update when bumping them, is in
 ## Download
 
 Built releases are on the [releases page](../../releases/latest): one zip
-holding `awgsocks.exe` and the six service scripts. Before unpacking, compare
+holding `awgsocks.exe` and the six service scripts. Before unzipping, compare
 the zip against the value in the release's `SHA256SUMS.txt`, from PowerShell in
 the folder you downloaded it to:
 
@@ -162,11 +232,10 @@ the folder you downloaded it to:
 Get-FileHash -Algorithm SHA256 .\awgsocks-*-windows-amd64.zip
 ```
 
-Where you unpack it barely matters, because installing copies the executable
+Where you unzip it barely matters, because installing copies the executable
 and the scripts into `C:\Program Files\AWGSocks` and runs the service from
-there. Once installed, use the scripts in that folder and delete the one you
-unpacked. If you do run start, stop, status, config or uninstall from the
-unpacked folder, it hands over to the installed copy; install is the one
+there. If you do run start, stop, status, config or uninstall from the
+unzipped folder, it hands over to the installed copy; install is the one
 script that runs from where it is, because that is how an update is applied.
 The reason is under [Installing](docs/SERVICE.md#installing).
 
@@ -212,40 +281,6 @@ it when a different version is installed.
 
 The service scripts live in `windows\` in the source tree. They expect
 `awgsocks.exe` beside them, which is how the zip lays them out.
-
-## Quick start
-
-Six scripts sit next to `awgsocks.exe`. Each one asks for Administrator rights
-itself, so double clicking is enough.
-
-| Script | What it does |
-| ------ | ------------ |
-| `service-install.bat` | Validates your configuration, installs the service and starts it, then checks that the proxy really answers. If the service is already installed it shows both versions and asks first, and keeps your settings |
-| `service-start.bat` | Starts an already installed service and waits for the proxy to answer |
-| `service-stop.bat` | Stops the tunnel and closes the proxy port, leaving the service installed |
-| `service-status.bat` | Shows the tunnel and proxy state, which applications are using the proxy, and whether any of them is also going out directly |
-| `service-config.bat` | Opens the settings file, then applies the change and reports what took effect |
-| `service-uninstall.bat` | Stops and removes the service and deletes `C:\ProgramData\AWGSocks`, after asking. `C:\Program Files\AWGSocks` stays, so the service can be installed again from there |
-
-`service-install.bat` uses a single `.conf` file sitting next to it. If there
-is none, or more than one, it opens a file picker, starting in the official
-AmneziaVPN client's configuration folder when that client is installed.
-
-That is the whole setup. Point a program at `127.0.0.1:10808` as a SOCKS5
-proxy with no authentication, and turn on whatever its setting is called for
-resolving hostnames through the proxy. Without that the program resolves names
-itself and leaks them outside the tunnel.
-
-To confirm it works, run the [quick leak check](#testing).
-
-> [!NOTE]
-> `service-uninstall.bat` deletes the copy of your configuration that the
-> service runs from, under `C:\ProgramData\AWGSocks`. The original `.conf`
-> file you installed from is never touched, and neither is
-> `C:\Program Files\AWGSocks`: delete that folder by hand to remove the
-> program itself.
-
-[docs/SERVICE.md](docs/SERVICE.md) covers the same steps run by hand.
 
 ## Security model
 

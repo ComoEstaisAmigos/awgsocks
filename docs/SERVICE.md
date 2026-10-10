@@ -1,7 +1,7 @@
 # Service installation and control
 
 Installing, running and removing the Windows service by hand. The scripts in
-[Quick start](../README.md#quick-start) run these same commands, so this is what you
+[Usage](../README.md#the-scripts) run these same commands, so this is what you
 want in a script of your own or when something needs diagnosing.
 
 ## Installing

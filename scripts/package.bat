@@ -7,5 +7,11 @@ rem   scripts\package.bat                 package HEAD into release\
 rem   scripts\package.bat -Ref v1.2.3     package a tag
 rem   scripts\package.bat -OutDir C:\out  write somewhere else
 
+setlocal
+rem Run from PowerShell 7, this file gets PowerShell 7's PSModulePath through
+rem cmd.exe. Windows PowerShell then loads PowerShell 7's
+rem Microsoft.PowerShell.Utility and Get-FileHash is gone. Without the variable
+rem it uses its own module directories.
+set "PSModulePath="
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0package.ps1" %*
 exit /b %errorlevel%

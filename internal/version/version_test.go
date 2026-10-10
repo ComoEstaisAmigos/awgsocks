@@ -51,6 +51,34 @@ func TestReleaseToolchainIsDocumented(t *testing.T) {
 	}
 }
 
+// TestPackageScriptClearsPSModulePath keeps scripts/package.bat working when it
+// is run from PowerShell 7, the default shell in Windows Terminal.
+//
+// PowerShell 7 passes its PSModulePath to cmd.exe, and Windows PowerShell
+// started from there loads PowerShell 7's Microsoft.PowerShell.Utility, which
+// has no Get-FileHash. package.ps1 then builds the executable and fails at the
+// last step. Clearing the variable has to happen inside setlocal, or a
+// `call scripts\package.bat` from a cmd prompt loses it for the rest of the
+// session.
+func TestPackageScriptClearsPSModulePath(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "package.bat"))
+	if err != nil {
+		t.Fatalf("could not read scripts/package.bat: %v", err)
+	}
+	text := strings.ToLower(string(raw))
+	setlocal := regexp.MustCompile(`(?m)^setlocal\r?$`).FindStringIndex(text)
+	clear := regexp.MustCompile(`(?m)^set "psmodulepath="\r?$`).FindStringIndex(text)
+	run := regexp.MustCompile(`(?m)^powershell .*package\.ps1`).FindStringIndex(text)
+	switch {
+	case run == nil:
+		t.Fatal("scripts/package.bat no longer runs package.ps1 through powershell, so this check cannot see its environment")
+	case clear == nil || clear[0] > run[0]:
+		t.Error(`scripts/package.bat does not run set "PSModulePath=" before powershell, so packaging from PowerShell 7 loses Get-FileHash`)
+	case setlocal == nil || setlocal[0] > clear[0]:
+		t.Error("scripts/package.bat clears PSModulePath outside setlocal, so it leaks into the calling cmd session")
+	}
+}
+
 // TestDocsNameThePinnedUpstream keeps the documentation from quoting an
 // upstream AmneziaWG version the binary is not built against.
 //
