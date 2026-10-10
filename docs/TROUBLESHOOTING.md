@@ -1,0 +1,184 @@
+# Troubleshooting
+
+Symptoms first. Each one names what you would see, then what causes it.
+
+## The browser says the proxy refuses connections
+
+Check that the service is actually running:
+
+```bat
+.\awgsocks.exe status
+```
+
+`Service state : stopped` means it is installed but was never started, which is
+what happens when `install` is run without `--start`:
+
+```bat
+.\awgsocks.exe start
+```
+
+If `Listening : yes` and the browser still cannot connect, confirm it is using
+`127.0.0.1`, port `10808`, SOCKS v5, and no authentication.
+
+## TLS handshakes hang and uploads fail
+
+The symptom is a browser stuck on "performing a TLS handshake" forever while the
+same site loads fine with `curl`. Downloads work, uploads do not.
+
+This is the MTU problem described under
+[MTU and the AmneziaWG per-packet prefix](NETWORKING.md#mtu-and-the-amneziawg-per-packet-prefix). Check that `check`
+reports a derived MTU rather than 1420:
+
+```bat
+.\awgsocks.exe check --config C:\ProgramData\AWGSocks\client.conf
+```
+
+If you wrote an explicit `MTU` line yourself, it is honoured as is, so lower it.
+
+> [!NOTE]
+> The derivation cancels `S4` out, so over an IPv4 endpoint the packet on the
+> wire is always `1420 + 32 + 8 + 20 = 1480` bytes whatever `S4` is, which fits
+> a 1492 byte PPPoE path as well as a 1500 byte one. An IPv6 endpoint costs 20
+> bytes more and lands on exactly 1500, which a narrower path drops. Lower `MTU`
+> in the `.conf` if your endpoint is IPv6 and your path is under 1500.
+
+## Pages load very slowly or never finish
+
+First confirm this is not a bandwidth problem:
+
+```bat
+curl.exe -o NUL --proxy socks5h://127.0.0.1:10808 -w "%{speed_download} B/s\n" "https://speed.cloudflare.com/__down?bytes=25000000"
+```
+
+If that number is close to your non-VPN measurement, throughput is fine and the
+problem is almost always DNS. Look at the `DNS cache` line in
+`awgsocks status`: a high `tunnel queries` count relative to `hits` means name
+resolution is the bottleneck.
+
+Try a different DNS server in the configuration. Some public resolvers rate
+limit queries coming from a VPN server's shared address, which causes the losses.
+If new names stop resolving altogether right after a page that asks for many
+broken names, such as a DNS test site, while sites already open keep working,
+the resolver has stopped answering the VPN server for a while. Wait a few
+minutes, or use another resolver or a resolver on this PC; see
+[A resolver on this PC](NETWORKING.md#a-resolver-on-this-pc).
+
+> [!NOTE]
+> A 1 to 2 MB file measures the TLS handshake, not throughput. See
+> [Measuring throughput honestly](TESTING.md#measuring-throughput-honestly).
+
+## Hostnames do not resolve but IP addresses work
+
+The configuration probably has no `DNS` line. Check the `In-tunnel DNS` field in
+`awgsocks status`, add one to the `.conf` and run `awgsocks reload`.
+
+The other possibility is that the in-tunnel DNS server is not covered by
+`AllowedIPs`.
+
+If `status` shows `Local DNS` instead, the `DNS` line is a loopback address and
+lookups go to a resolver on this PC, such as dnscrypt-proxy. It has to be
+running and listening on port 53 of that address; check with
+`nslookup example.com 127.0.0.1`. See
+[A resolver on this PC](NETWORKING.md#a-resolver-on-this-pc).
+
+## Filtering or remote DNS has no effect
+
+`status` says `no program sent a hostname` under `Hostname requests`, or
+`DNS cache` stays at `no lookups yet` while you browse. The programs using the
+proxy are resolving names themselves and sending only IP addresses, so neither
+the `DNS` servers in the configuration nor a resolver on this PC such as
+dnscrypt-proxy ever sees their lookups.
+
+Turn on remote DNS in the program. In Firefox and Mullvad Browser that is
+**Proxy DNS when using SOCKS v5** in the connection settings. Mullvad Browser
+also enables its own DNS over HTTPS by default; with the setting above on, names
+go to the proxy instead. `Hostname requests` should start counting at once.
+
+## The service will not start
+
+From an Administrator prompt, since the log directory is closed to standard
+users:
+
+```bat
+.\awgsocks.exe check --config C:\ProgramData\AWGSocks\client.conf
+type C:\ProgramData\AWGSocks\logs\awgsocks.log
+```
+
+An invalid configuration is the usual cause, and `check` names the line.
+
+A tunnel that cannot come up is a different case: the service still starts,
+keeps retrying, and `status` shows `State : failed` with the reason under
+`Last error`, typically an `Endpoint` hostname that cannot be resolved yet.
+
+## Everything loses its connection while another VPN app is connected
+
+Seen with the AmneziaVPN app connected on the same `.conf` the service was
+installed from: connections fail or keep dropping, pages stall, and programs
+that never use the proxy suffer too.
+
+The cause is one client key used by two clients at once. A WireGuard server
+keeps a single session for each key, so every handshake from one client takes
+that session from the other, the other handshakes to take it back, and the two
+keep trading it. When the other client is a system wide VPN, the whole machine's
+traffic is caught in that.
+
+AWGSocks watches for it. A system wide client assigns the tunnel address from
+the `Address` line to the adapter it creates, and AWGSocks never creates one,
+so a Windows adapter holding that address means the same configuration is
+connected elsewhere. The tunnel then pauses without sending another packet, the
+proxy refuses requests with `0x03` instead of sending them anywhere else, and
+`service-install.bat` and `service-start.bat` say so instead of reporting the
+proxy ready. `status` says why:
+
+```
+State             : stopped
+Paused            : this configuration is connected on the Windows adapter "AmneziaVPN" (10.66.66.2),
+                    resumes when that adapter disconnects
+```
+
+It resumes on its own once the other client disconnects, unless the tunnel was
+stopped by hand in the meantime. To use both at the same time, give AWGSocks a
+configuration of its own: a second client created on the server, which comes
+with its own key and its own tunnel address.
+
+The check looks at the address only, so an unrelated VPN on a different server
+pauses the tunnel too if it happens to hand out the same address. That is not
+far fetched: `10.66.66.2` is the first client address of popular WireGuard
+install scripts. The adapter named in `status` tells you which client it is.
+
+## No handshake
+
+`awgsocks status` shows `Last handshake : never`. Check, in order:
+
+1. The `Endpoint` address and port.
+2. Whether UDP reaches the server at all, given firewalls and ISP filtering.
+3. Whether the AWG parameters (`Jc`, `S1-S4`, `H1-H4`) on the server match the
+   client exactly. In AmneziaWG a mismatch means the far side does not recognise
+   the packets at all.
+4. Whether `PresharedKey` is set on both sides.
+
+## status says it cannot reach the management pipe
+
+Run the command from an elevated prompt. The pipe ACL is restrictive on purpose.
+
+## Torrents connect but peers are few
+
+Check that `udp_associate` is enabled, and that the client is set to send peer
+connections through the proxy rather than only trackers. With UDP disabled, DHT
+and UDP trackers cannot work through the proxy at all.
+
+## The connection drops after sleep
+
+The service listens for power events and reconnects on resume. If you run it
+with `run` rather than as a service, those events do not arrive; use
+`awgsocks reconnect`.
+
+## More detail in the logs
+
+Set `"log_level": "debug"` in `config.json` and run:
+
+```bat
+.\awgsocks.exe reload
+```
+
+No key material is written even at DEBUG level.

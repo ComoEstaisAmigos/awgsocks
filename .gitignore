@@ -1,0 +1,21 @@
+# Build output
+awgsocks.exe
+*.exe
+*.syso
+dist/
+
+# Local configuration and logs
+*.conf
+!config/example.conf
+config.json
+!config/config.example.json
+logs/
+*.log
+
+# Editor and tooling
+.vscode/
+.idea/
+*.swp
+
+# Release artifacts
+release/
